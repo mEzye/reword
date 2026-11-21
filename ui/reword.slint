@@ -87,9 +87,9 @@ component CommitField inherits LineEdit {
 export component Preferences inherits Window {
     title: "Reword · Налаштування";
     preferred-width: 520px;
-    preferred-height: 472px;
+    preferred-height: 432px;
     min-width: 480px;
-    min-height: 400px;
+    min-height: 360px;
     background: #191d23;
     default-font-size: 14px;
     init => { Palette.color-scheme = ColorScheme.dark; }
@@ -128,10 +128,10 @@ export component Preferences inherits Window {
             vertical-stretch: 1;
             horizontal-scrollbar-policy: always-off;
             content-width: self.visible-width;
-            content-height: 360px;
+            content-height: 320px;
             Rectangle {
                 width: parent.visible-width;
-                height: 360px;
+                height: 320px;
                 TouchArea {
                     width: 100%; height: 100%;
                     clicked => { focus-sink.focus(); }
@@ -146,7 +146,6 @@ export component Preferences inherits Window {
                     VerticalBox {
                         padding: 0px; spacing: 0px;
                         Text { text: "Reword"; color: #eef0f3; font-size: 22px; }
-                        Text { text: "Вигляд і анімація"; color: #a6adb8; font-size: 12px; }
                     }
                     Rectangle {
                         width: 164px; height: 36px; border-radius: 18px;
@@ -191,7 +190,6 @@ export component Preferences inherits Window {
                 HorizontalBox {
                     height: 20px; padding: 0px;
                     Text { text: "Швидкість анімації"; color: #eef0f3; font-size: 16px; horizontal-stretch: 1; }
-                    Text { text: "1× — твій темп"; color: #a6adb8; font-size: 12px; vertical-alignment: center; }
                 }
                 HorizontalBox {
                     height: 32px; padding: 0px; spacing: 8px;
@@ -229,7 +227,6 @@ export component Preferences inherits Window {
                     }
                     Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
                 }
-                Text { height: 32px; text: "«Разом» змінює обидві швидкості пропорційно\nEnter — прийняти · Escape — скасувати · 0,25–3×"; color: #a6adb8; font-size: 12px; }
                 }
             }
         }
@@ -241,7 +238,6 @@ export component Preferences inherits Window {
         HorizontalBox {
             height: 20px; padding: 0px; spacing: 8px;
             Text { text: root.message; color: #ffb482; font-size: 12px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
-            Text { text: "Ctrl + Alt + H"; color: #a6adb8; font-size: 12px; vertical-alignment: center; }
         }
     }
 }
