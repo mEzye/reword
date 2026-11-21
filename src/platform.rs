@@ -69,8 +69,39 @@ pub fn keep_non_interactive(window: &slint::Window) {
     window.with_winit_window(|native| {
         let _ = native.set_cursor_hittest(false);
         #[cfg(windows)]
-        no_activate(native);
+        {
+            no_activate(native);
+            initialize_opengl_clickthrough(native);
+        }
     });
+}
+
+#[cfg(windows)]
+fn initialize_opengl_clickthrough(window: &winit::window::Window) {
+    if crate::launcher::worker_renderer() != Some(crate::launcher::Renderer::OpenGl) {
+        return;
+    }
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetLayeredWindowAttributes, LWA_ALPHA, SetLayeredWindowAttributes,
+    };
+    if let Ok(handle) = window.window_handle() {
+        if let RawWindowHandle::Win32(handle) = handle.as_raw() {
+            let hwnd = handle.hwnd.get() as *mut std::ffi::c_void;
+            unsafe {
+                // winit adds WS_EX_LAYERED for click-through, but leaves it
+                // uninitialized. WGL frames then never reach the compositor.
+                // Full global opacity preserves the framebuffer's per-pixel
+                // alpha and leaves WS_EX_TRANSPARENT handling mouse input.
+                let mut color_key = 0;
+                let mut alpha = 0;
+                let mut flags = 0;
+                if GetLayeredWindowAttributes(hwnd, &mut color_key, &mut alpha, &mut flags) == 0 {
+                    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+                }
+            }
+        }
+    }
 }
 
 pub fn resident_description(window: &slint::Window) -> String {
