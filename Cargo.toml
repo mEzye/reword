@@ -1,6 +1,6 @@
 [package]
 name = "reword"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 description = "A native, animated dictation overlay"
 build = "build.rs"
@@ -16,6 +16,7 @@ fs2 = "0.4"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [patch.crates-io]
+glutin-winit = { path = "vendor/glutin-winit-0.5.0" }
 wgpu-hal = { path = "vendor/wgpu-hal-30.0.2" }
 i-slint-renderer-femtovg = { path = "vendor/i-slint-renderer-femtovg-1.19.0" }
 

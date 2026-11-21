@@ -194,9 +194,10 @@ fn position_native(native: &winit::window::Window) {
 fn no_activate(window: &winit::window::Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW,
+        GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_APPWINDOW,
+        WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_STATICEDGE,
+        WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_OVERLAPPEDWINDOW, WS_POPUP,
     };
     if let Ok(handle) = window.window_handle() {
         if let RawWindowHandle::Win32(handle) = handle.as_raw() {
@@ -206,9 +207,16 @@ fn no_activate(window: &winit::window::Window) {
             unsafe {
                 let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                 let desired = (style | WS_EX_NOACTIVATE as isize | WS_EX_TOOLWINDOW as isize)
-                    & !(WS_EX_APPWINDOW as isize);
-                if style != desired {
+                    & !((WS_EX_APPWINDOW
+                        | WS_EX_WINDOWEDGE
+                        | WS_EX_CLIENTEDGE
+                        | WS_EX_DLGMODALFRAME
+                        | WS_EX_STATICEDGE) as isize);
+                let normal = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+                let borderless = (normal & !WS_OVERLAPPEDWINDOW) | WS_POPUP;
+                if style != desired || normal != borderless {
                     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired);
+                    SetWindowLongPtrW(hwnd, GWL_STYLE, borderless as isize);
                     // Windows caches the non-client geometry. Without a frame
                     // refresh, the old caption/borders can clip the GL client.
                     SetWindowPos(
