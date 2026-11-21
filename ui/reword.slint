@@ -9,8 +9,8 @@ export component Overlay inherits Window {
     no-frame: true;
     always-on-top: true;
     background: transparent;
-    in property <color> panel-color: #181a1d;
-    in property <color> accent-color: #cdd1d6;
+    in property <color> panel-color;
+    in property <color> accent-color;
     in property <float> shell-width: 22;
     in property <float> shell-height: 7;
     in property <float> visibility: 0;
@@ -87,17 +87,17 @@ component CommitField inherits LineEdit {
 export component Preferences inherits Window {
     title: "Reword · Налаштування";
     preferred-width: 520px;
-    preferred-height: 432px;
+    preferred-height: 472px;
     min-width: 480px;
     min-height: 360px;
     background: #191d23;
     default-font-size: 14px;
     init => { Palette.color-scheme = ColorScheme.dark; }
-    in-out property <string> background-hex: "#181A1D";
-    in-out property <string> accent-hex: "#CDD1D6";
+    in-out property <string> background-hex;
+    in-out property <string> accent-hex;
     in-out property <string> message: "";
-    in property <color> panel-color: #181a1d;
-    in property <color> accent-color: #cdd1d6;
+    in property <color> panel-color;
+    in property <color> accent-color;
     in-out property <float> open-speed: 1;
     in-out property <float> close-speed: 1;
     in-out property <float> master-speed: 1;
@@ -105,12 +105,15 @@ export component Preferences inherits Window {
     in-out property <string> close-speed-text: "1";
     in-out property <string> master-speed-text: "1";
     in-out property <int> palette-index: 0;
+    in property <[string]> palette-names;
+    in-out property <string> scheme-name;
     callback apply(string, string);
     callback preview();
     callback preset(int);
     callback speed-changed(float, float, float);
     callback speed-edited(int, string);
     callback color-edited(int, string);
+    callback save-scheme(string, string, string);
     changed background-hex => { root.color-edited(0, root.background-hex); }
     changed accent-hex => { root.color-edited(1, root.accent-hex); }
 
@@ -128,10 +131,10 @@ export component Preferences inherits Window {
             vertical-stretch: 1;
             horizontal-scrollbar-policy: always-off;
             content-width: self.visible-width;
-            content-height: 320px;
+            content-height: 360px;
             Rectangle {
                 width: parent.visible-width;
-                height: 320px;
+                height: 360px;
                 TouchArea {
                     width: 100%; height: 100%;
                     clicked => { focus-sink.focus(); }
@@ -182,9 +185,24 @@ export component Preferences inherits Window {
                     Text { text: "Колірна схема"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
                     ComboBox {
                         min-width: 192px; max-width: 192px;
-                        model: ["Графіт", "Оливка", "Абрикос", "М'ята", "Світла", "Ірис", "Власна"];
+                        model: root.palette-names;
                         current-index <=> root.palette-index;
                         selected => { root.preset(self.current-index); }
+                    }
+                }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 8px;
+                    CommitField {
+                        text <=> root.scheme-name;
+                        placeholder-text: "Назва своєї схеми";
+                        min-width: 120px; horizontal-stretch: 1;
+                        leave => { focus-sink.focus(); }
+                    }
+                    Button {
+                        text: "Зберегти схему";
+                        min-width: 144px; max-width: 144px;
+                        enabled: root.scheme-name != "";
+                        clicked => { root.save-scheme(root.scheme-name, root.background-hex, root.accent-hex); }
                     }
                 }
                 HorizontalBox {

@@ -11,6 +11,7 @@
 /.reword*.lock
 /.renderer-ready-*.txt
 /colors.ini
+/palettes.ini
 /animation.ini
 /.env
 /.env.*

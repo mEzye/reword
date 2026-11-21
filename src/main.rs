@@ -2,6 +2,7 @@
 
 mod launcher;
 mod motion;
+mod palettes;
 mod platform;
 mod speeds;
 
@@ -27,15 +28,6 @@ struct Palette {
     background: slint::Color,
     accent: slint::Color,
 }
-
-const COLOR_PRESETS: [(&str, &str); 6] = [
-    ("#181A1D", "#CDD1D6"),
-    ("#29382D", "#BDD3A9"),
-    ("#202C3A", "#FFB482"),
-    ("#172D2B", "#92E2C0"),
-    ("#F1EBE3", "#425C75"),
-    ("#543E94", "#FF9090"),
-];
 
 fn parse_color(value: &str) -> Result<slint::Color, &'static str> {
     let digits = value.trim().trim_start_matches('#');
@@ -65,33 +57,25 @@ fn hex(color: slint::Color) -> String {
     )
 }
 
-impl Default for Palette {
-    fn default() -> Self {
-        Self::preset(0).unwrap()
-    }
-}
-
 impl Palette {
-    fn preset(index: i32) -> Option<Self> {
-        let &(background, accent) = COLOR_PRESETS.get(usize::try_from(index).ok()?)?;
-        Some(Self {
-            background: parse_color(background).unwrap(),
-            accent: parse_color(accent).unwrap(),
-        })
+    fn from_scheme(scheme: &palettes::Scheme) -> Self {
+        Self {
+            background: parse_color(&scheme.background).unwrap(),
+            accent: parse_color(&scheme.accent).unwrap(),
+        }
     }
-    fn preset_index(self) -> i32 {
-        (0..COLOR_PRESETS.len())
-            .find(|&index| {
-                let preset = Self::preset(index as i32).unwrap();
-                self.background == preset.background && self.accent == preset.accent
-            })
-            .map_or(COLOR_PRESETS.len() as i32, |index| index as i32)
-    }
-    fn load(path: &Path) -> Self {
-        let mut palette = Self::default();
+    fn load(path: &Path, mut palette: Self, library: &palettes::Library) -> (Self, Option<usize>) {
+        let mut selected = None;
         if let Ok(text) = fs::read_to_string(path) {
             for line in text.lines() {
                 if let Some((key, value)) = line.split_once('=') {
+                    if key.trim() == "scheme" {
+                        selected = library
+                            .schemes
+                            .iter()
+                            .position(|scheme| scheme.name == value.trim());
+                        continue;
+                    }
                     if let Ok(color) = parse_color(value) {
                         match key.trim() {
                             "background" => palette.background = color,
@@ -102,14 +86,19 @@ impl Palette {
                 }
             }
         }
-        palette
+        if let Some(index) = selected {
+            palette = Self::from_scheme(&library.schemes[index]);
+        }
+        (palette, selected)
     }
-    fn save(self, path: &Path) -> std::io::Result<()> {
+    fn save(self, path: &Path, name: Option<&str>) -> std::io::Result<()> {
         let temporary = path.with_extension("ini.tmp");
         fs::write(
             &temporary,
             format!(
-                "background={}\naccent={}\n",
+                "{}background={}\naccent={}\n",
+                name.map(|name| format!("scheme={name}\n"))
+                    .unwrap_or_default(),
                 hex(self.background),
                 hex(self.accent)
             ),
@@ -137,6 +126,7 @@ struct App {
     overlay: Overlay,
     preferences: Preferences,
     palette: RefCell<Palette>,
+    palettes: RefCell<palettes::Library>,
     speeds: std::cell::Cell<speeds::Speeds>,
     speed_save_timer: Timer,
     animation: RefCell<Option<Animation>>,
@@ -165,7 +155,44 @@ impl App {
         self.preferences
             .set_background_hex(hex(palette.background).into());
         self.preferences.set_accent_hex(hex(palette.accent).into());
-        self.preferences.set_palette_index(palette.preset_index());
+        self.preferences
+            .set_palette_index(self.palette_index(palette));
+    }
+    fn palette_index(&self, palette: Palette) -> i32 {
+        let library = self.palettes.borrow();
+        let background = hex(palette.background);
+        let accent = hex(palette.accent);
+        let selected = self.preferences.get_palette_index();
+        if let Some(scheme) = usize::try_from(selected)
+            .ok()
+            .and_then(|index| library.schemes.get(index))
+        {
+            if scheme.background == background && scheme.accent == accent {
+                return selected;
+            }
+        }
+        library.index(&background, &accent)
+    }
+    fn refresh_palette_names(&self) {
+        let mut names: Vec<slint::SharedString> = self
+            .palettes
+            .borrow()
+            .schemes
+            .iter()
+            .map(|scheme| scheme.name.clone().into())
+            .collect();
+        names.push("Власна".into());
+        self.preferences
+            .set_palette_names(ModelRc::new(VecModel::from(names)));
+    }
+    fn save_palette(&self, palette: Palette) -> std::io::Result<()> {
+        let index = self.palette_index(palette);
+        let library = self.palettes.borrow();
+        let name = usize::try_from(index)
+            .ok()
+            .and_then(|index| library.schemes.get(index))
+            .map(|scheme| scheme.name.as_str());
+        palette.save(&self.config, name)
     }
     fn show_preferences(&self) {
         if let Err(error) = self.preferences.show() {
@@ -511,7 +538,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bars = Rc::new(VecModel::from(vec![WaveBar::default(); motion::BAR_COUNT]));
     overlay.set_bars(ModelRc::from(bars.clone()));
     let config = directory.join("colors.ini");
-    let palette = Palette::load(&config);
+    let palettes = palettes::Library::load_or_create(&directory.join("palettes.ini"))?;
+    let (palette, selected_scheme) = Palette::load(
+        &config,
+        Palette::from_scheme(palettes.default_scheme()),
+        &palettes,
+    );
     let speeds = speeds::Speeds::load(&directory.join("animation.ini"));
     if let Err(error) = speeds.save(&directory.join("animation.ini")) {
         writeln!(log, "Animation settings migration/save: {error}")?;
@@ -521,6 +553,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         overlay,
         preferences,
         palette: RefCell::new(palette),
+        palettes: RefCell::new(palettes),
         speeds: std::cell::Cell::new(speeds),
         speed_save_timer: Timer::default(),
         animation: RefCell::new(None),
@@ -576,7 +609,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
+    app.refresh_palette_names();
+    if let Some(index) = selected_scheme {
+        app.preferences.set_palette_index(index as i32);
+    }
     app.set_palette(palette);
+    if let Err(error) = app.save_palette(palette) {
+        app.log(&format!("Active color scheme migration/save: {error}"));
+    }
     app.set_speeds(speeds);
     platform::setup_overlay(app.overlay.window());
 
@@ -649,13 +689,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let index = parse_color(&app.preferences.get_background_hex())
             .and_then(|background| {
-                Ok(Palette {
+                Ok(app.palette_index(Palette {
                     background,
                     accent: parse_color(&app.preferences.get_accent_hex())?,
-                }
-                .preset_index())
+                }))
             })
-            .unwrap_or(COLOR_PRESETS.len() as i32);
+            .unwrap_or(app.palettes.borrow().schemes.len() as i32);
         app.preferences.set_palette_index(index);
     });
     let weak = Rc::downgrade(&app);
@@ -669,7 +708,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 accent: parse_color(&accent)?,
             })
         }) {
-            Ok(palette) => match palette.save(&app.config) {
+            Ok(palette) => match app.save_palette(palette) {
                 Ok(()) => {
                     app.set_palette(palette);
                     app.preferences.set_message("Кольори збережено".into());
@@ -687,10 +726,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let Some(palette) = Palette::preset(index) else {
+        let palette = usize::try_from(index).ok().and_then(|index| {
+            app.palettes
+                .borrow()
+                .schemes
+                .get(index)
+                .map(Palette::from_scheme)
+        });
+        let Some(palette) = palette else {
             return;
         };
-        match palette.save(&app.config) {
+        match app.save_palette(palette) {
             Ok(()) => {
                 app.set_palette(palette);
                 app.preferences.set_message("Кольори збережено".into());
@@ -701,6 +747,56 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .set_message(format!("Не вдалося зберегти: {error}").into()),
         }
     });
+
+    let weak = Rc::downgrade(&app);
+    app.preferences
+        .on_save_scheme(move |name, background, accent| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let palette = match parse_color(&background).and_then(|background| {
+                Ok(Palette {
+                    background,
+                    accent: parse_color(&accent)?,
+                })
+            }) {
+                Ok(palette) => palette,
+                Err(error) => {
+                    app.preferences.set_message(error.into());
+                    return;
+                }
+            };
+            let mut library = app.palettes.borrow().clone();
+            if let Err(error) =
+                library.upsert(&name, &hex(palette.background), &hex(palette.accent))
+            {
+                app.preferences.set_message(error.into());
+                return;
+            }
+            if let Err(error) = library.save(&app.config.with_file_name("palettes.ini")) {
+                app.preferences
+                    .set_message(format!("Не вдалося зберегти схему: {error}").into());
+                return;
+            }
+            app.palettes.replace(library);
+            app.refresh_palette_names();
+            let index = app
+                .palettes
+                .borrow()
+                .schemes
+                .iter()
+                .position(|scheme| scheme.name == name.trim())
+                .unwrap();
+            app.preferences.set_palette_index(index as i32);
+            app.set_palette(palette);
+            app.preferences.set_scheme_name("".into());
+            match app.save_palette(palette) {
+                Ok(()) => app.preferences.set_message("Схему збережено".into()),
+                Err(error) => app.preferences.set_message(
+                    format!("Схему збережено; не вдалося зберегти активні кольори: {error}").into(),
+                ),
+            }
+        });
 
     let weak = Rc::downgrade(&app);
     app.preferences
