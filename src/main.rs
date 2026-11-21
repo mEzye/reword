@@ -28,7 +28,8 @@ struct Palette {
     accent: slint::Color,
 }
 
-const COLOR_PRESETS: [(&str, &str); 4] = [
+const COLOR_PRESETS: [(&str, &str); 5] = [
+    ("#29382D", "#BDD3A9"),
     ("#202C3A", "#FFB482"),
     ("#172D2B", "#92E2C0"),
     ("#F1EBE3", "#425C75"),
@@ -65,10 +66,7 @@ fn hex(color: slint::Color) -> String {
 
 impl Default for Palette {
     fn default() -> Self {
-        Self {
-            background: parse_color("#202C3A").unwrap(),
-            accent: parse_color("#FFB482").unwrap(),
-        }
+        Self::preset(0).unwrap()
     }
 }
 
@@ -86,7 +84,7 @@ impl Palette {
                 let preset = Self::preset(index as i32).unwrap();
                 self.background == preset.background && self.accent == preset.accent
             })
-            .map_or(4, |index| index as i32)
+            .map_or(COLOR_PRESETS.len() as i32, |index| index as i32)
     }
     fn load(path: &Path) -> Self {
         let mut palette = Self::default();
@@ -656,7 +654,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 .preset_index())
             })
-            .unwrap_or(4);
+            .unwrap_or(COLOR_PRESETS.len() as i32);
         app.preferences.set_palette_index(index);
     });
     let weak = Rc::downgrade(&app);
