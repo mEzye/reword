@@ -429,6 +429,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let overlay = Overlay::new()?;
     let _ = overlay.window();
+    overlay
+        .window()
+        .set_size(slint::LogicalSize::new(224.0, 90.0));
     creating_overlay.set(false);
     let preferences = Preferences::new()?;
     let about = About::new()?;

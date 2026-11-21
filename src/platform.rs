@@ -107,7 +107,10 @@ fn initialize_opengl_clickthrough(window: &winit::window::Window) {
 pub fn resident_description(window: &slint::Window) -> String {
     window
         .with_winit_window(|native| {
-            let description = format!("{:?}", native.id());
+            let description = format!(
+                "{:?}; client={:?}; outer={:?}; slint={:?}; scale={}",
+                native.id(), native.inner_size(), native.outer_size(), window.size(), native.scale_factor()
+            );
             #[cfg(windows)] {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW};
@@ -134,6 +137,12 @@ pub fn window_attributes(
         .with_active(false)
         .with_transparent(true)
         .with_decorations(false)
+        .with_resizable(false)
+        // Match the Slint canvas before the native surface and click-through
+        // backing bitmap are created, including on a scaled display.
+        .with_inner_size(winit::dpi::LogicalSize::new(224.0, 90.0))
+        .with_min_inner_size(winit::dpi::LogicalSize::new(224.0, 90.0))
+        .with_max_inner_size(winit::dpi::LogicalSize::new(224.0, 90.0))
         .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
     #[cfg(windows)]
     {
@@ -185,7 +194,8 @@ fn position_native(native: &winit::window::Window) {
 fn no_activate(window: &winit::window::Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+        GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW,
     };
     if let Ok(handle) = window.window_handle() {
@@ -199,6 +209,17 @@ fn no_activate(window: &winit::window::Window) {
                     & !(WS_EX_APPWINDOW as isize);
                 if style != desired {
                     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired);
+                    // Windows caches the non-client geometry. Without a frame
+                    // refresh, the old caption/borders can clip the GL client.
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                    );
                 }
             }
         }
