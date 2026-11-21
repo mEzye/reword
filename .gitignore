@@ -1,0 +1,15 @@
+/target/
+/Reword.exe
+/reword.exe
+/reword.log
+/error.log
+/preview-rust/
+/legacy-wpf/*.exe
+/dist/
+/preview/
+/*.log
+/.reword*.lock
+/.renderer-ready-*.txt
+/colors.ini
+/.env
+/.env.*

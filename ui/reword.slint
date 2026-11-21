@@ -1,0 +1,126 @@
+import { Button, LineEdit, VerticalBox, HorizontalBox, AboutSlint } from "std-widgets.slint";
+
+export struct WaveBar { x: float, height: float, alpha: float }
+
+export component Overlay inherits Window {
+    title: "Reword";
+    width: 224px;
+    height: 90px;
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    in property <color> panel-color: #202c3a;
+    in property <color> accent-color: #ffb482;
+    in property <float> shell-width: 22;
+    in property <float> shell-height: 7;
+    in property <float> visibility: 0;
+    in property <float> offset-y: 0;
+    in property <float> mic-x: 112;
+    in property <float> mic-scale: 1;
+    in property <float> mic-alpha: 0;
+    in property <[WaveBar]> bars;
+
+    shell := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2 + root.offset-y * 1px;
+        width: root.shell-width * 1px;
+        height: root.shell-height * 1px;
+        border-radius: self.height / 2;
+        background: root.panel-color.with-alpha(root.visibility);
+        border-width: 1px;
+        border-color: #ffffff.with-alpha(root.visibility * 0.0863);
+
+        for bar in root.bars: Rectangle {
+            x: bar.x * 1px - shell.x - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            width: 2.6px;
+            height: max(0px, bar.height * 1px);
+            border-radius: 1.3px;
+            background: root.accent-color;
+            opacity: bar.alpha * root.visibility;
+        }
+        Image {
+            x: root.mic-x * 1px - shell.x - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            height: min(24px * root.mic-scale, max(0px, parent.height - 4px));
+            width: self.height;
+            source: @image-url("../assets/mic.svg");
+            colorize: root.accent-color;
+            image-fit: contain;
+            opacity: root.mic-alpha * root.visibility;
+        }
+    }
+}
+
+export component Preferences inherits Window {
+    title: "Reword · Вигляд";
+    preferred-width: 390px;
+    preferred-height: 360px;
+    background: #19212c;
+    default-font-size: 14px;
+    in-out property <string> background-hex: "#202C3A";
+    in-out property <string> accent-hex: "#FFB482";
+    in-out property <string> message: "";
+    in property <color> panel-color: #202c3a;
+    in property <color> accent-color: #ffb482;
+    callback apply(string, string);
+    callback preview();
+    callback preset(int);
+
+    VerticalBox {
+        padding: 24px;
+        spacing: 15px;
+        Text { text: "Ctrl + Alt + H"; font-size: 23px; color: #eff2f6; }
+        Text { text: "Тримай клавіші, щоб показати панель."; color: #aeb9c8; wrap: word-wrap; }
+        HorizontalBox {
+            Text { text: "Фон"; color: #eff2f6; vertical-alignment: center; horizontal-stretch: 1; }
+            Rectangle { width: 25px; height: 25px; border-radius: 7px; background: root.panel-color; border-width: 1px; border-color: #ffffff30; }
+            LineEdit { text <=> root.background-hex; preferred-width: 112px; }
+        }
+        HorizontalBox {
+            Text { text: "Мікрофон і хвилі"; color: #eff2f6; vertical-alignment: center; horizontal-stretch: 1; }
+            Rectangle { width: 25px; height: 25px; border-radius: 7px; background: root.accent-color; }
+            LineEdit { text <=> root.accent-hex; preferred-width: 112px; }
+        }
+        HorizontalBox {
+            Button { text: "Абрикос"; clicked => { root.preset(0); } }
+            Button { text: "М'ята"; clicked => { root.preset(1); } }
+            Button { text: "Світла"; clicked => { root.preset(2); } }
+        }
+        HorizontalBox {
+            Button { text: "Застосувати"; clicked => { root.apply(root.background-hex, root.accent-hex); } }
+            Button { text: "Повторити анімацію"; clicked => { root.preview(); } }
+        }
+        Text { text: root.message; color: #ffb482; wrap: word-wrap; min-height: 18px; }
+        Text { text: "Rust + Slint · GPU\nВізуальний прототип, без запису голосу."; color: #8794a6; font-size: 12px; }
+    }
+}
+
+export component About inherits Window {
+    title: "Про Reword";
+    preferred-width: 340px;
+    preferred-height: 240px;
+    VerticalBox {
+        padding: 24px;
+        Text { text: "Reword 0.3.0"; font-size: 24px; horizontal-alignment: center; }
+        Text { text: "Візуальний прототип диктовки\nІконка мікрофона: Lucide, ISC"; horizontal-alignment: center; }
+        AboutSlint { }
+    }
+}
+
+export component RewordTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/tray.svg");
+    tooltip: "Reword · Ctrl+Alt+H";
+    callback preview();
+    callback preferences();
+    callback about();
+    callback quit();
+    clicked => { root.preferences(); }
+    Menu {
+        MenuItem { title: "Повторити анімацію"; activated => { root.preview(); } }
+        MenuItem { title: "Кольори…"; activated => { root.preferences(); } }
+        MenuItem { title: "Про Reword"; activated => { root.about(); } }
+        MenuSeparator { }
+        MenuItem { title: "Вийти з Reword"; activated => { root.quit(); } }
+    }
+}

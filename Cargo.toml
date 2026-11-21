@@ -1,0 +1,28 @@
+[package]
+name = "reword"
+version = "0.3.0"
+edition = "2024"
+description = "A native, animated dictation overlay"
+build = "build.rs"
+
+[dependencies]
+slint = { version = "=1.19.0", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg-wgpu", "renderer-femtovg", "unstable-winit-030", "system-tray", "accessibility"] }
+global-hotkey = "0.10"
+raw-window-handle = "0.6"
+png = "0.18"
+fs2 = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal-30.0.2" }
+i-slint-renderer-femtovg = { path = "vendor/i-slint-renderer-femtovg-1.19.0" }
+
+[build-dependencies]
+slint-build = "=1.19.0"
+
+[profile.release]
+lto = "thin"
+strip = true
+
