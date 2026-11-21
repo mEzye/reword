@@ -66,10 +66,14 @@ export component Preferences inherits Window {
     in-out property <float> open-speed: 1;
     in-out property <float> close-speed: 1;
     in-out property <float> master-speed: 1;
+    in-out property <string> open-speed-text: "1";
+    in-out property <string> close-speed-text: "1";
+    in-out property <string> master-speed-text: "1";
     callback apply(string, string);
     callback preview();
     callback preset(int);
     callback speed-changed(float, float, float);
+    callback speed-edited(int, string);
 
     VerticalBox {
         padding: 24px;
@@ -97,23 +101,35 @@ export component Preferences inherits Window {
             Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.open-speed;
                 changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
             }
-            Text { text: "\{round(root.open-speed * 100) / 100}×"; color: #ffb482; preferred-width: 45px; horizontal-alignment: right; vertical-alignment: center; }
+            LineEdit { text <=> root.open-speed-text; preferred-width: 65px; horizontal-alignment: right;
+                accepted(value) => { root.speed-edited(0, value); }
+                changed has-focus => { if (!self.has-focus) { root.speed-edited(0, self.text); } }
+            }
+            Text { text: "×"; color: #ffb482; vertical-alignment: center; }
         }
         HorizontalBox {
             Text { text: "Зникнення"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
             Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.close-speed;
                 changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
             }
-            Text { text: "\{round(root.close-speed * 100) / 100}×"; color: #ffb482; preferred-width: 45px; horizontal-alignment: right; vertical-alignment: center; }
+            LineEdit { text <=> root.close-speed-text; preferred-width: 65px; horizontal-alignment: right;
+                accepted(value) => { root.speed-edited(1, value); }
+                changed has-focus => { if (!self.has-focus) { root.speed-edited(1, self.text); } }
+            }
+            Text { text: "×"; color: #ffb482; vertical-alignment: center; }
         }
         HorizontalBox {
             Text { text: "Разом"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
             Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.master-speed;
                 changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
             }
-            Text { text: "\{round(root.master-speed * 100) / 100}×"; color: #ffb482; preferred-width: 45px; horizontal-alignment: right; vertical-alignment: center; }
+            LineEdit { text <=> root.master-speed-text; preferred-width: 65px; horizontal-alignment: right;
+                accepted(value) => { root.speed-edited(2, value); }
+                changed has-focus => { if (!self.has-focus) { root.speed-edited(2, self.text); } }
+            }
+            Text { text: "×"; color: #ffb482; vertical-alignment: center; }
         }
-        Text { text: "Ліворуч — повільніше, праворуч — швидше. «Разом» множить обидві швидкості, зберігаючи їх співвідношення. Зберігається автоматично."; color: #aeb9c8; font-size: 12px; wrap: word-wrap; }
+        Text { text: "1× — твій базовий темп. Значення 0,25–3 можна вводити вручну: Enter або вихід із поля. «Разом» множить обидві швидкості. Зберігається автоматично."; color: #aeb9c8; font-size: 12px; wrap: word-wrap; }
         HorizontalBox {
             Button { text: "Застосувати"; clicked => { root.apply(root.background-hex, root.accent-hex); } }
             Button { text: "Повторити анімацію"; clicked => { root.preview(); } }

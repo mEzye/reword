@@ -155,12 +155,41 @@ impl App {
         self.preferences.set_open_speed(speeds.entrance);
         self.preferences.set_close_speed(speeds.exit);
         self.preferences.set_master_speed(speeds.master);
+        self.preferences
+            .set_open_speed_text(speeds::display_multiplier(speeds.entrance).into());
+        self.preferences
+            .set_close_speed_text(speeds::display_multiplier(speeds.exit).into());
+        self.preferences
+            .set_master_speed_text(speeds::display_multiplier(speeds.master).into());
         if let Some(animation) = self.animation.borrow_mut().as_mut() {
             let (open, close) = speeds.effective();
             animation
                 .playback
                 .set_speeds(animation.start.elapsed().as_secs_f32(), open, close);
         }
+    }
+    fn change_speeds(self: &Rc<Self>, speeds: speeds::Speeds) {
+        self.set_speeds(speeds);
+        let weak = Rc::downgrade(self);
+        self.speed_save_timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(250),
+            move || {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                match app
+                    .speeds
+                    .get()
+                    .save(&app.config.with_file_name("animation.ini"))
+                {
+                    Ok(()) => app.preferences.set_message("Швидкість збережено".into()),
+                    Err(error) => app
+                        .preferences
+                        .set_message(format!("Не вдалося зберегти швидкість: {error}").into()),
+                }
+            },
+        );
     }
     fn update_frame(&self, time: f32, exit: f32) {
         self.apply_frame(motion::frame(time, exit));
@@ -462,6 +491,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = directory.join("colors.ini");
     let palette = Palette::load(&config);
     let speeds = speeds::Speeds::load(&directory.join("animation.ini"));
+    if let Err(error) = speeds.save(&directory.join("animation.ini")) {
+        writeln!(log, "Animation settings migration/save: {error}")?;
+    }
     let rendered = Rc::new(std::cell::Cell::new(0_u32));
     let app = Rc::new(App {
         overlay,
@@ -637,28 +669,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let Some(app) = weak.upgrade() else {
                 return;
             };
-            app.set_speeds(speeds::Speeds::new(entrance, exit, master));
-            let weak = Rc::downgrade(&app);
-            app.speed_save_timer.start(
-                TimerMode::SingleShot,
-                Duration::from_millis(250),
-                move || {
-                    let Some(app) = weak.upgrade() else {
-                        return;
-                    };
-                    match app
-                        .speeds
-                        .get()
-                        .save(&app.config.with_file_name("animation.ini"))
-                    {
-                        Ok(()) => app.preferences.set_message("Швидкість збережено".into()),
-                        Err(error) => app
-                            .preferences
-                            .set_message(format!("Не вдалося зберегти швидкість: {error}").into()),
-                    }
-                },
-            );
+            app.change_speeds(speeds::Speeds::new(entrance, exit, master));
         });
+    let weak = Rc::downgrade(&app);
+    app.preferences.on_speed_edited(move |index, text| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        match speeds::parse_multiplier(&text) {
+            Ok(value) => {
+                let mut speeds = app.speeds.get();
+                match index {
+                    0 => speeds.entrance = value,
+                    1 => speeds.exit = value,
+                    2 => speeds.master = value,
+                    _ => return,
+                }
+                app.change_speeds(speeds);
+            }
+            Err(message) => {
+                app.set_speeds(app.speeds.get());
+                app.preferences.set_message(message.into());
+            }
+        }
+    });
 
     let capture_timer = Timer::default();
     let startup_timer = Timer::default();
