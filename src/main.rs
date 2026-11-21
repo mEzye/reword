@@ -4,6 +4,7 @@ mod launcher;
 mod motion;
 mod palettes;
 mod platform;
+mod speech;
 mod speeds;
 
 use fs2::FileExt;
@@ -125,6 +126,11 @@ thread_local! {
 struct App {
     overlay: Overlay,
     preferences: Preferences,
+    voice_settings: VoiceSettings,
+    voice: RefCell<Option<speech::Voice>>,
+    voice_generation: std::cell::Cell<u64>,
+    dictating: std::cell::Cell<bool>,
+    voice_level: std::cell::Cell<f32>,
     palette: RefCell<Palette>,
     palettes: RefCell<palettes::Library>,
     speeds: std::cell::Cell<speeds::Speeds>,
@@ -143,6 +149,81 @@ struct App {
 }
 
 impl App {
+    fn start_voice(self: &Rc<Self>) {
+        self.stop_recording();
+        let settings = speech::Settings::load(&self.config.with_file_name("speech.ini"));
+        if !self.config.with_file_name("speech.ini").exists() {
+            if let Err(error) = settings.save(&self.config.with_file_name("speech.ini")) {
+                self.log(&error);
+            }
+        }
+        self.voice_settings
+            .set_mode(if settings.mode == "server" { 1 } else { 0 });
+        self.voice_settings
+            .set_device(match settings.device.as_str() {
+                "cuda" => 1,
+                "auto" => 2,
+                _ => 0,
+            });
+        self.voice_settings
+            .set_server_url(settings.url.clone().into());
+        self.voice_settings
+            .set_server_token(settings.token.clone().into());
+        let generation = self.voice_generation.get() + 1;
+        self.voice_generation.set(generation);
+        self.voice.take();
+        let directory = self.config.parent().unwrap().to_path_buf();
+        let voice = speech::Voice::spawn(settings, directory, move |event| {
+            let _ = slint::invoke_from_event_loop(move || {
+                CONTROLLER.with(|controller| {
+                    if let Some(app) = controller.borrow().upgrade() {
+                        if app.voice_generation.get() == generation {
+                            app.voice_event(event);
+                        }
+                    }
+                });
+            });
+        });
+        self.voice.replace(Some(voice));
+    }
+    fn voice_event(&self, event: speech::Event) {
+        match event {
+            speech::Event::Status(status) => self.voice_settings.set_status(status.into()),
+            speech::Event::Error(error) => {
+                self.log(&format!("Speech error: {error}"));
+                self.voice_settings.set_status(error.into());
+            }
+            speech::Event::Transcript {
+                text,
+                inserted,
+                elapsed,
+            } => {
+                self.voice_settings.set_transcript(text.into());
+                self.log(&format!("Speech complete: {elapsed:.2}s"));
+                self.voice_settings.set_status(
+                    match inserted {
+                        Ok(()) => format!("Вставлено · {elapsed:.1} с"),
+                        Err(error) => error,
+                    }
+                    .into(),
+                );
+            }
+        }
+    }
+    fn start_recording(&self) {
+        if !self.dictating.replace(true) {
+            if let Some(voice) = self.voice.borrow().as_ref() {
+                voice.start();
+            }
+        }
+    }
+    fn stop_recording(&self) {
+        if self.dictating.replace(false) {
+            if let Some(voice) = self.voice.borrow().as_ref() {
+                voice.stop();
+            }
+        }
+    }
     fn log(&self, message: &str) {
         let _ = writeln!(self.log.borrow_mut(), "{message}");
     }
@@ -386,6 +467,7 @@ impl App {
         );
     }
     fn release(&self) {
+        self.stop_recording();
         if self.pending_open.get() == Some(false) {
             self.pending_open.set(None);
         }
@@ -413,6 +495,7 @@ impl App {
             && !platform::hotkey_held()
             && !animation.playback.is_closing()
         {
+            self.stop_recording();
             animation.playback.set_closing(time, true);
             self.log("hotkey: released");
         }
@@ -456,7 +539,20 @@ impl App {
             }
             return;
         }
-        self.apply_frame(motion::frame_with_stream(source_time, exit, time));
+        let mut frame = motion::frame_with_stream(source_time, exit, time);
+        if !animation.preview {
+            let volume = self
+                .voice
+                .borrow()
+                .as_ref()
+                .map_or(0.0, speech::Voice::level);
+            let volume = self.voice_level.get() + (volume - self.voice_level.get()) * 0.18;
+            self.voice_level.set(volume);
+            for bar in &mut frame.bars {
+                bar.height *= 0.2 + volume * 0.8;
+            }
+        }
+        self.apply_frame(frame);
     }
     fn capture(window: &slint::Window, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = window.take_snapshot()?;
@@ -533,6 +629,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .set_size(slint::LogicalSize::new(224.0, 90.0));
     creating_overlay.set(false);
     let preferences = Preferences::new()?;
+    let voice_settings = VoiceSettings::new()?;
     let about = About::new()?;
     let tray = RewordTray::new()?;
     let bars = Rc::new(VecModel::from(vec![WaveBar::default(); motion::BAR_COUNT]));
@@ -552,6 +649,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = Rc::new(App {
         overlay,
         preferences,
+        voice_settings,
+        voice: RefCell::new(None),
+        voice_generation: std::cell::Cell::new(0),
+        dictating: std::cell::Cell::new(false),
+        voice_level: std::cell::Cell::new(0.0),
         palette: RefCell::new(palette),
         palettes: RefCell::new(palettes),
         speeds: std::cell::Cell::new(speeds),
@@ -640,7 +742,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 CONTROLLER.with(|controller| {
                     if let Some(app) = controller.borrow().upgrade() {
                         match event.state {
-                            HotKeyState::Pressed => app.open(false),
+                            HotKeyState::Pressed => {
+                                app.start_recording();
+                                app.open(false);
+                            }
                             HotKeyState::Released => app.release(),
                         }
                     }
@@ -663,6 +768,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     tray.on_quit(|| {
         let _ = slint::quit_event_loop();
     });
+    let weak = Rc::downgrade(&app);
+    tray.on_voice_settings(move || {
+        if let Some(app) = weak.upgrade() {
+            let _ = app.voice_settings.show();
+        }
+    });
+    let weak = Rc::downgrade(&app);
+    app.voice_settings
+        .on_apply(move |mode, device, url, token| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let mut settings = speech::Settings::load(&app.config.with_file_name("speech.ini"));
+            settings.mode = if mode == 1 { "server" } else { "local" }.into();
+            settings.device = match device {
+                1 => "cuda",
+                2 => "auto",
+                _ => "cpu",
+            }
+            .into();
+            settings.url = url.trim().trim_end_matches('/').into();
+            settings.token = token.trim().into();
+            match settings.save(&app.config.with_file_name("speech.ini")) {
+                Ok(()) => app.start_voice(),
+                Err(error) => app.voice_settings.set_status(error.into()),
+            }
+        });
     let about_weak = about.as_weak();
     tray.on_about(move || {
         if let Some(about) = about_weak.upgrade() {
@@ -871,6 +1003,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             *i += 1;
         });
     } else {
+        if !args.iter().any(|a| a == "--smoke-test") {
+            app.start_voice();
+        }
+        if args.iter().any(|a| a == "--voice-settings") {
+            app.voice_settings.show()?;
+        }
         if args.iter().any(|a| a == "--settings") {
             app.show_preferences();
         }
@@ -947,6 +1085,38 @@ fn worker_main() {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--speech-server") {
+        if let Err(error) = speech::server::run() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(path) =
+        std::env::args().find_map(|arg| arg.strip_prefix("--transcribe-file=").map(PathBuf::from))
+    {
+        let base = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        match speech::transcribe_file(&path, &base) {
+            Ok(result) => {
+                if let Some(path) = std::env::args()
+                    .find_map(|arg| arg.strip_prefix("--output=").map(PathBuf::from))
+                {
+                    fs::write(path, result.to_string()).unwrap();
+                } else {
+                    println!("{result}");
+                }
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(renderer) = launcher::worker_renderer() {
         if renderer == launcher::Renderer::Vulkan
             && std::env::args().any(|arg| arg == "--simulate-vulkan-crash")
