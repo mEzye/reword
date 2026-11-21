@@ -109,6 +109,9 @@ export component Preferences inherits Window {
     callback preset(int);
     callback speed-changed(float, float, float);
     callback speed-edited(int, string);
+    callback color-edited(int, string);
+    changed background-hex => { root.color-edited(0, root.background-hex); }
+    changed accent-hex => { root.color-edited(1, root.accent-hex); }
 
     focus-sink := FocusScope { width: 1px; height: 1px; }
     TouchArea {

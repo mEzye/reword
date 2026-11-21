@@ -614,6 +614,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let weak = Rc::downgrade(&app);
+    app.preferences.on_color_edited(move |index, text| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        if let Ok(color) = parse_color(&text) {
+            match index {
+                0 => app.preferences.set_panel_color(color),
+                1 => app.preferences.set_accent_color(color),
+                _ => {}
+            }
+        }
+    });
+    let weak = Rc::downgrade(&app);
     app.preferences.on_apply(move |background, accent| {
         let Some(app) = weak.upgrade() else {
             return;
