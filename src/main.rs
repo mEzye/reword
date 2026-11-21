@@ -148,7 +148,9 @@ impl App {
         }
     }
     fn update_frame(&self, time: f32, exit: f32) {
-        let frame = motion::frame(time, exit);
+        self.apply_frame(motion::frame(time, exit));
+    }
+    fn apply_frame(&self, frame: motion::Frame) {
         self.overlay.set_shell_width(frame.width);
         self.overlay.set_shell_height(frame.height);
         self.overlay.set_visibility(frame.alpha);
@@ -358,7 +360,7 @@ impl App {
             }
             return;
         }
-        self.update_frame(source_time, exit);
+        self.apply_frame(motion::frame_with_stream(source_time, exit, time));
     }
     fn capture(window: &slint::Window, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = window.take_snapshot()?;

@@ -24,7 +24,7 @@ pub fn ease(t: f32) -> f32 {
 }
 
 // Keep the closing curve's position when the hotkey changes direction. The
-// stream clock is frozen while contracting and resumes once it has expanded.
+// entrance clock is frozen while contracting; the wave stream uses its own clock.
 pub struct Playback {
     source_time: f32,
     changed_at: f32,
@@ -74,6 +74,10 @@ impl Playback {
 // Evaluate from elapsed time instead of integrating per frame. Missed frames never
 // slow the animation down or change the relative timing of the icon and stream.
 pub fn frame(time: f32, exit: f32) -> Frame {
+    frame_with_stream(time, exit, time)
+}
+
+pub fn frame_with_stream(time: f32, exit: f32, stream_time: f32) -> Frame {
     let exit = exit.clamp(0.0, 1.0);
     let source_mic_x = 112.0 - 68.0 * ease((time - 0.035) / 0.465);
     let mic_x = 112.0 + (source_mic_x - 112.0) * exit;
@@ -88,25 +92,25 @@ pub fn frame(time: f32, exit: f32) -> Frame {
         mic_alpha: ease((time - 0.035) / 0.19) * tail_alpha,
         bars: [Bar::default(); BAR_COUNT],
     };
-    let last = ((time - 0.12) / 0.047).floor() as i64;
+    let last = ((stream_time - 0.12) / 0.047).floor() as i64;
     let right = 132.0 + 59.0 * ease((time - 0.12) / 0.63);
     for (slot, i) in ((last - BAR_COUNT as i64 + 1)..=last).enumerate() {
         if i < 0 {
             continue;
         }
         let born = 0.12 + i as f32 * 0.047;
-        let age = time - born;
+        let age = stream_time - born;
         if age < 0.0 {
             continue;
         }
-        let origin = 112.0 - 68.0 * ease((born - 0.035) / 0.465) + 18.0;
+        let origin = 112.0 - 68.0 * ease((time - age - 0.035) / 0.465) + 18.0;
         let x = origin + age * 187.0;
         if x < source_mic_x + 20.0 || x > right + 7.0 {
             continue;
         }
         let envelope = ease(age / 0.095) * ((right + 7.0 - x) / 14.0).clamp(0.0, 1.0);
         let seed = 0.5 + 0.5 * (i as f32 * 2.39996 + 0.8).sin();
-        let pulse = 0.78 + 0.22 * (time * 7.5 - i as f32 * 0.74).sin();
+        let pulse = 0.78 + 0.22 * (stream_time * 7.5 - i as f32 * 0.74).sin();
         result.bars[slot] = Bar {
             x: mic_x + (x - source_mic_x) * exit,
             height: (5.0 + 22.0 * seed * seed) * pulse * envelope * exit,
@@ -119,6 +123,26 @@ pub fn frame(time: f32, exit: f32) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waves_keep_flowing_while_the_entrance_clock_is_paused() {
+        // Hold geometry and contraction fixed, so only stream motion can pass.
+        for entrance_time in [0.25, 1.5] {
+            for exit in [0.3, 0.7, 1.0] {
+                let a = frame_with_stream(entrance_time, exit, 2.0);
+                let b = frame_with_stream(entrance_time, exit, 2.01);
+                assert_eq!(a.width, b.width);
+                assert_eq!(a.mic_x, b.mic_x);
+                assert!(
+                    a.bars
+                        .iter()
+                        .zip(&b.bars)
+                        .any(|(a, b)| { a.alpha > 0.01 && b.alpha > 0.01 && b.x > a.x }),
+                    "stream stopped at entrance={entrance_time}, exit={exit}"
+                );
+            }
+        }
+    }
 
     fn assert_same_frame(a: Frame, b: Frame) {
         for (a, b) in [
