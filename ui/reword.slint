@@ -1,4 +1,4 @@
-import { Button, LineEdit, Slider, VerticalBox, HorizontalBox, AboutSlint } from "std-widgets.slint";
+import { Button, LineEdit, Slider, VerticalBox, HorizontalBox, AboutSlint, Palette, ScrollView } from "std-widgets.slint";
 
 export struct WaveBar { x: float, height: float, alpha: float }
 
@@ -53,11 +53,14 @@ export component Overlay inherits Window {
 }
 
 export component Preferences inherits Window {
-    title: "Reword · Вигляд";
-    preferred-width: 440px;
-    preferred-height: 570px;
-    background: #19212c;
+    title: "Reword · Налаштування";
+    preferred-width: 520px;
+    preferred-height: 472px;
+    min-width: 480px;
+    min-height: 400px;
+    background: #191d23;
     default-font-size: 14px;
+    init => { Palette.color-scheme = ColorScheme.dark; }
     in-out property <string> background-hex: "#202C3A";
     in-out property <string> accent-hex: "#FFB482";
     in-out property <string> message: "";
@@ -76,69 +79,115 @@ export component Preferences inherits Window {
     callback speed-edited(int, string);
 
     VerticalBox {
-        padding: 24px;
-        spacing: 15px;
-        Text { text: "Ctrl + Alt + H"; font-size: 23px; color: #eff2f6; }
-        Text { text: "Тримай клавіші, щоб показати панель."; color: #aeb9c8; wrap: word-wrap; }
-        HorizontalBox {
-            Text { text: "Фон"; color: #eff2f6; vertical-alignment: center; horizontal-stretch: 1; }
-            Rectangle { width: 25px; height: 25px; border-radius: 7px; background: root.panel-color; border-width: 1px; border-color: #ffffff30; }
-            LineEdit { text <=> root.background-hex; preferred-width: 112px; }
+        padding: 16px;
+        spacing: 8px;
+        ScrollView {
+            min-height: 0px;
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            content-height: 360px;
+            VerticalBox {
+                width: parent.visible-width;
+                height: 360px;
+                padding: 0px;
+                padding-right: 8px;
+                spacing: 8px;
+                HorizontalBox {
+                    height: 40px; padding: 0px; spacing: 16px;
+                    VerticalBox {
+                        padding: 0px; spacing: 0px;
+                        Text { text: "Reword"; color: #eef0f3; font-size: 22px; }
+                        Text { text: "Вигляд і анімація"; color: #a6adb8; font-size: 12px; }
+                    }
+                    Rectangle {
+                        width: 164px; height: 36px; border-radius: 18px;
+                        background: root.panel-color;
+                        border-width: 1px; border-color: #ffffff16;
+                        Image { x: 12px; y: 8px; width: 20px; height: 20px;
+                            source: @image-url("../assets/mic.svg"); colorize: root.accent-color;
+                        }
+                        for h[i] in [8, 17, 11, 22, 9, 15, 6, 20, 12, 7, 16, 10]: Rectangle {
+                            x: 45px + i * 8px; y: (36px - h * 1px) / 2;
+                            width: 3px; height: h * 1px; border-radius: 1.5px;
+                            background: root.accent-color;
+                        }
+                    }
+                }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 12px;
+                    Text { text: "Фон панелі"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
+                    Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.panel-color; border-width: 1px; border-color: #ffffff20; }
+                    LineEdit { text <=> root.background-hex; min-width: 112px; max-width: 112px; horizontal-stretch: 0; }
+                }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 12px;
+                    Text { text: "Мікрофон і хвилі"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
+                    Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.accent-color; }
+                    LineEdit { text <=> root.accent-hex; min-width: 112px; max-width: 112px; horizontal-stretch: 0; }
+                }
+                HorizontalBox {
+                    height: 28px; padding: 0px; spacing: 8px;
+                    Button { text: "Абрикос"; clicked => { root.preset(0); } }
+                    Button { text: "М'ята"; clicked => { root.preset(1); } }
+                    Button { text: "Світла"; clicked => { root.preset(2); } }
+                }
+                HorizontalBox {
+                    height: 20px; padding: 0px;
+                    Text { text: "Швидкість анімації"; color: #eef0f3; font-size: 16px; horizontal-stretch: 1; }
+                    Text { text: "1× — твій темп"; color: #a6adb8; font-size: 12px; vertical-alignment: center; }
+                }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 8px;
+                    Text { text: "Поява"; color: #eef0f3; width: 88px; vertical-alignment: center; }
+                    Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.open-speed; min-width: 120px; horizontal-stretch: 1;
+                        changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
+                    }
+                    LineEdit { text <=> root.open-speed-text; min-width: 72px; max-width: 72px; horizontal-stretch: 0; horizontal-alignment: right;
+                        accepted(value) => { root.speed-edited(0, value); }
+                        changed has-focus => { if (!self.has-focus) { root.speed-edited(0, self.text); } }
+                    }
+                    Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
+                }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 8px;
+                    Text { text: "Зникнення"; color: #eef0f3; width: 88px; vertical-alignment: center; }
+                    Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.close-speed; min-width: 120px; horizontal-stretch: 1;
+                        changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
+                    }
+                    LineEdit { text <=> root.close-speed-text; min-width: 72px; max-width: 72px; horizontal-stretch: 0; horizontal-alignment: right;
+                        accepted(value) => { root.speed-edited(1, value); }
+                        changed has-focus => { if (!self.has-focus) { root.speed-edited(1, self.text); } }
+                    }
+                    Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
+                }
+                HorizontalBox {
+                    height: 32px; padding: 0px; spacing: 8px;
+                    Text { text: "Разом"; color: #eef0f3; width: 88px; vertical-alignment: center; }
+                    Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.master-speed; min-width: 120px; horizontal-stretch: 1;
+                        changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
+                    }
+                    LineEdit { text <=> root.master-speed-text; min-width: 72px; max-width: 72px; horizontal-stretch: 0; horizontal-alignment: right;
+                        accepted(value) => { root.speed-edited(2, value); }
+                        changed has-focus => { if (!self.has-focus) { root.speed-edited(2, self.text); } }
+                    }
+                    Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
+                }
+                Text { height: 32px; text: "«Разом» змінює обидві швидкості пропорційно\nРучне введення: Enter або вихід із поля · 0,25–3×"; color: #a6adb8; font-size: 12px; }
+            }
         }
         HorizontalBox {
-            Text { text: "Мікрофон і хвилі"; color: #eff2f6; vertical-alignment: center; horizontal-stretch: 1; }
-            Rectangle { width: 25px; height: 25px; border-radius: 7px; background: root.accent-color; }
-            LineEdit { text <=> root.accent-hex; preferred-width: 112px; }
-        }
-        HorizontalBox {
-            Button { text: "Абрикос"; clicked => { root.preset(0); } }
-            Button { text: "М'ята"; clicked => { root.preset(1); } }
-            Button { text: "Світла"; clicked => { root.preset(2); } }
-        }
-        Text { text: "Швидкість анімації"; color: #eff2f6; font-size: 17px; }
-        HorizontalBox {
-            Text { text: "Поява"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
-            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.open-speed;
-                changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
-            }
-            LineEdit { text <=> root.open-speed-text; preferred-width: 65px; horizontal-alignment: right;
-                accepted(value) => { root.speed-edited(0, value); }
-                changed has-focus => { if (!self.has-focus) { root.speed-edited(0, self.text); } }
-            }
-            Text { text: "×"; color: #ffb482; vertical-alignment: center; }
-        }
-        HorizontalBox {
-            Text { text: "Зникнення"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
-            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.close-speed;
-                changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
-            }
-            LineEdit { text <=> root.close-speed-text; preferred-width: 65px; horizontal-alignment: right;
-                accepted(value) => { root.speed-edited(1, value); }
-                changed has-focus => { if (!self.has-focus) { root.speed-edited(1, self.text); } }
-            }
-            Text { text: "×"; color: #ffb482; vertical-alignment: center; }
-        }
-        HorizontalBox {
-            Text { text: "Разом"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
-            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.master-speed;
-                changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
-            }
-            LineEdit { text <=> root.master-speed-text; preferred-width: 65px; horizontal-alignment: right;
-                accepted(value) => { root.speed-edited(2, value); }
-                changed has-focus => { if (!self.has-focus) { root.speed-edited(2, self.text); } }
-            }
-            Text { text: "×"; color: #ffb482; vertical-alignment: center; }
-        }
-        Text { text: "1× — твій базовий темп. Значення 0,25–3 можна вводити вручну: Enter або вихід із поля. «Разом» множить обидві швидкості. Зберігається автоматично."; color: #aeb9c8; font-size: 12px; wrap: word-wrap; }
-        HorizontalBox {
-            Button { text: "Застосувати"; clicked => { root.apply(root.background-hex, root.accent-hex); } }
+            height: 36px; padding: 0px; spacing: 8px;
+            Button { text: "Застосувати кольори"; clicked => { root.apply(root.background-hex, root.accent-hex); } }
             Button { text: "Повторити анімацію"; clicked => { root.preview(); } }
         }
-        Text { text: root.message; color: #ffb482; wrap: word-wrap; min-height: 18px; }
-        Text { text: "Rust + Slint · GPU\nВізуальний прототип, без запису голосу."; color: #8794a6; font-size: 12px; }
+        HorizontalBox {
+            height: 20px; padding: 0px; spacing: 8px;
+            Text { text: root.message; color: #ffb482; font-size: 12px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+            Text { text: "Ctrl + Alt + H"; color: #a6adb8; font-size: 12px; vertical-alignment: center; }
+        }
     }
 }
-
 export component About inherits Window {
     title: "Про Reword";
     preferred-width: 340px;
