@@ -1,4 +1,4 @@
-import { Button, LineEdit, Slider, VerticalBox, HorizontalBox, AboutSlint, Palette, ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, Slider, ComboBox, VerticalBox, HorizontalBox, AboutSlint, Palette, ScrollView } from "std-widgets.slint";
 
 export struct WaveBar { x: float, height: float, alpha: float }
 
@@ -104,6 +104,7 @@ export component Preferences inherits Window {
     in-out property <string> open-speed-text: "1";
     in-out property <string> close-speed-text: "1";
     in-out property <string> master-speed-text: "1";
+    in-out property <int> palette-index: 0;
     callback apply(string, string);
     callback preview();
     callback preset(int);
@@ -178,10 +179,14 @@ export component Preferences inherits Window {
                     }
                 }
                 HorizontalBox {
-                    height: 28px; padding: 0px; spacing: 8px;
-                    Button { text: "Абрикос"; clicked => { root.preset(0); } }
-                    Button { text: "М'ята"; clicked => { root.preset(1); } }
-                    Button { text: "Світла"; clicked => { root.preset(2); } }
+                    height: 32px; padding: 0px; spacing: 12px;
+                    Text { text: "Колірна схема"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
+                    ComboBox {
+                        min-width: 192px; max-width: 192px;
+                        model: ["Абрикос", "М'ята", "Світла", "Ірис", "Власна"];
+                        current-index <=> root.palette-index;
+                        selected => { root.preset(self.current-index); }
+                    }
                 }
                 HorizontalBox {
                     height: 20px; padding: 0px;

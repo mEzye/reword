@@ -28,6 +28,13 @@ struct Palette {
     accent: slint::Color,
 }
 
+const COLOR_PRESETS: [(&str, &str); 4] = [
+    ("#202C3A", "#FFB482"),
+    ("#172D2B", "#92E2C0"),
+    ("#F1EBE3", "#425C75"),
+    ("#543E94", "#FF9090"),
+];
+
 fn parse_color(value: &str) -> Result<slint::Color, &'static str> {
     let digits = value.trim().trim_start_matches('#');
     if !digits.is_ascii() {
@@ -66,6 +73,21 @@ impl Default for Palette {
 }
 
 impl Palette {
+    fn preset(index: i32) -> Option<Self> {
+        let &(background, accent) = COLOR_PRESETS.get(usize::try_from(index).ok()?)?;
+        Some(Self {
+            background: parse_color(background).unwrap(),
+            accent: parse_color(accent).unwrap(),
+        })
+    }
+    fn preset_index(self) -> i32 {
+        (0..COLOR_PRESETS.len())
+            .find(|&index| {
+                let preset = Self::preset(index as i32).unwrap();
+                self.background == preset.background && self.accent == preset.accent
+            })
+            .map_or(4, |index| index as i32)
+    }
     fn load(path: &Path) -> Self {
         let mut palette = Self::default();
         if let Ok(text) = fs::read_to_string(path) {
@@ -144,6 +166,7 @@ impl App {
         self.preferences
             .set_background_hex(hex(palette.background).into());
         self.preferences.set_accent_hex(hex(palette.accent).into());
+        self.preferences.set_palette_index(palette.preset_index());
     }
     fn show_preferences(&self) {
         if let Err(error) = self.preferences.show() {
@@ -625,6 +648,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
         }
+        let index = parse_color(&app.preferences.get_background_hex())
+            .and_then(|background| {
+                Ok(Palette {
+                    background,
+                    accent: parse_color(&app.preferences.get_accent_hex())?,
+                }
+                .preset_index())
+            })
+            .unwrap_or(4);
+        app.preferences.set_palette_index(index);
     });
     let weak = Rc::downgrade(&app);
     app.preferences.on_apply(move |background, accent| {
@@ -655,14 +688,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let (background, accent) = match index {
-            1 => ("#172D2B", "#92E2C0"),
-            2 => ("#F1EBE3", "#425C75"),
-            _ => ("#202C3A", "#FFB482"),
-        };
-        let palette = Palette {
-            background: parse_color(background).unwrap(),
-            accent: parse_color(accent).unwrap(),
+        let Some(palette) = Palette::preset(index) else {
+            return;
         };
         match palette.save(&app.config) {
             Ok(()) => {
