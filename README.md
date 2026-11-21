@@ -51,11 +51,15 @@ cargo build --release --locked
 cargo test --release --locked
 ```
 
-На цьому комп'ютері Rust і портативний LLVM-MinGW розміщені в `D:\Tools`. Сценарій збирає оптимізований файл і копіює його в корінь проєкту:
+На цьому комп'ютері Rust і портативний LLVM-MinGW розміщені в `D:\Tools`. Звичайний запуск сценарію використовує профіль `fast`: інкрементальна компіляція, без LTO, базова оптимізація коду застосунку та повна оптимізація залежностей, включно з GPU-рендерерами. Файл копіюється в корінь проєкту:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
+
+Перша збірка нового профілю компілює залежності й буде довшою. Наступні зміни використовують кеш у `target`; не видаляй його між збірками. Для релізу з ThinLTO використовуй `build.ps1 -ReleaseBuild`, для налагодження — `build.ps1 -DebugBuild`. Параметри оптимізації задаються в Cargo-профілях, без додаткових перевизначень через `cargo rustc`. Сценарій показує час збірки та зберігає HTML-звіт Cargo у `target/cargo-timings`.
+
+На інших системах швидкий режим доступний через `cargo build --profile fast --locked`.
 
 Сценарій вибирає toolchain `stable-x86_64-pc-windows-gnu` і target `x86_64-pc-windows-gnullvm`, налаштовує `PATH` і `LIBRARY_PATH`. На macOS/Linux цей Windows-сценарій не потрібен.
 

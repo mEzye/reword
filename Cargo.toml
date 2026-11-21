@@ -27,3 +27,14 @@ slint-build = "=1.19.0"
 lto = "thin"
 strip = true
 
+# Iteration builds keep the renderer optimized, but avoid whole-program LTO.
+[profile.fast]
+inherits = "release"
+opt-level = 1
+lto = "off"
+incremental = true
+codegen-units = 64
+
+[profile.fast.package."*"]
+opt-level = 3
+
