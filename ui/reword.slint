@@ -9,8 +9,8 @@ export component Overlay inherits Window {
     no-frame: true;
     always-on-top: true;
     background: transparent;
-    in property <color> panel-color: #29382d;
-    in property <color> accent-color: #bdd3a9;
+    in property <color> panel-color: #181a1d;
+    in property <color> accent-color: #cdd1d6;
     in property <float> shell-width: 22;
     in property <float> shell-height: 7;
     in property <float> visibility: 0;
@@ -93,11 +93,11 @@ export component Preferences inherits Window {
     background: #191d23;
     default-font-size: 14px;
     init => { Palette.color-scheme = ColorScheme.dark; }
-    in-out property <string> background-hex: "#29382D";
-    in-out property <string> accent-hex: "#BDD3A9";
+    in-out property <string> background-hex: "#181A1D";
+    in-out property <string> accent-hex: "#CDD1D6";
     in-out property <string> message: "";
-    in property <color> panel-color: #29382d;
-    in property <color> accent-color: #bdd3a9;
+    in property <color> panel-color: #181a1d;
+    in property <color> accent-color: #cdd1d6;
     in-out property <float> open-speed: 1;
     in-out property <float> close-speed: 1;
     in-out property <float> master-speed: 1;
@@ -182,7 +182,7 @@ export component Preferences inherits Window {
                     Text { text: "Колірна схема"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
                     ComboBox {
                         min-width: 192px; max-width: 192px;
-                        model: ["Шавлія", "Абрикос", "М'ята", "Світла", "Ірис", "Власна"];
+                        model: ["Графіт", "Оливка", "Абрикос", "М'ята", "Світла", "Ірис", "Власна"];
                         current-index <=> root.palette-index;
                         selected => { root.preset(self.current-index); }
                     }

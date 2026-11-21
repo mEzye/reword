@@ -28,7 +28,8 @@ struct Palette {
     accent: slint::Color,
 }
 
-const COLOR_PRESETS: [(&str, &str); 5] = [
+const COLOR_PRESETS: [(&str, &str); 6] = [
+    ("#181A1D", "#CDD1D6"),
     ("#29382D", "#BDD3A9"),
     ("#202C3A", "#FFB482"),
     ("#172D2B", "#92E2C0"),
