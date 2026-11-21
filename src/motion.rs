@@ -23,6 +23,54 @@ pub fn ease(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+// Keep the closing curve's position when the hotkey changes direction. The
+// stream clock is frozen while contracting and resumes once it has expanded.
+pub struct Playback {
+    source_time: f32,
+    changed_at: f32,
+    phase: f32,
+    closing: bool,
+}
+
+impl Playback {
+    pub fn new() -> Self {
+        Self {
+            source_time: 0.0,
+            changed_at: 0.0,
+            phase: 1.0,
+            closing: false,
+        }
+    }
+
+    pub fn is_closing(&self) -> bool {
+        self.closing
+    }
+
+    fn phase_at(&self, time: f32) -> f32 {
+        let travel = (time - self.changed_at).max(0.0) / 0.5;
+        (self.phase + if self.closing { -travel } else { travel }).clamp(0.0, 1.0)
+    }
+
+    pub fn sample(&self, time: f32) -> (f32, f32) {
+        let source_time = if self.closing {
+            self.source_time
+        } else {
+            self.source_time + (time - self.changed_at - (1.0 - self.phase) * 0.5).max(0.0)
+        };
+        (source_time, ease(self.phase_at(time)))
+    }
+
+    pub fn set_closing(&mut self, time: f32, closing: bool) {
+        if self.closing == closing {
+            return;
+        }
+        self.source_time = self.sample(time).0;
+        self.phase = self.phase_at(time);
+        self.changed_at = time;
+        self.closing = closing;
+    }
+}
+
 // Evaluate from elapsed time instead of integrating per frame. Missed frames never
 // slow the animation down or change the relative timing of the icon and stream.
 pub fn frame(time: f32, exit: f32) -> Frame {
@@ -71,6 +119,75 @@ pub fn frame(time: f32, exit: f32) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_same_frame(a: Frame, b: Frame) {
+        for (a, b) in [
+            (a.width, b.width),
+            (a.height, b.height),
+            (a.alpha, b.alpha),
+            (a.mic_x, b.mic_x),
+            (a.mic_scale, b.mic_scale),
+            (a.mic_alpha, b.mic_alpha),
+        ] {
+            assert!((a - b).abs() < 0.001, "frame jumped: {a} -> {b}");
+        }
+        for (a, b) in a.bars.iter().zip(&b.bars) {
+            assert!((a.x - b.x).abs() < 0.001);
+            assert!((a.height - b.height).abs() < 0.001);
+            assert!((a.alpha - b.alpha).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn pressing_again_reverses_without_resetting_any_visible_element() {
+        for released_at in [0.08, 0.25, 0.6, 2.0] {
+            for delay in [0.01, 0.15, 0.4] {
+                let mut playback = Playback::new();
+                playback.set_closing(released_at, true);
+                let pressed_at = released_at + delay;
+                let (t, exit) = playback.sample(pressed_at);
+                let before = frame(t, exit);
+                playback.set_closing(pressed_at, false);
+                let (t, resumed_exit) = playback.sample(pressed_at);
+                assert_same_frame(before, frame(t, resumed_exit));
+                assert!(playback.sample(pressed_at + 0.01).1 > exit);
+                let (t, exit) = playback.sample(pressed_at + delay + 0.1);
+                assert!((t - (released_at + 0.1)).abs() < 0.001);
+                assert_eq!(exit, 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn rapid_direction_changes_and_duplicate_events_preserve_the_current_frame() {
+        let mut playback = Playback::new();
+        for (time, closing) in [
+            (0.25, true),
+            (0.32, false),
+            (0.33, false),
+            (0.35, true),
+            (0.36, true),
+            (0.38, false),
+            (0.4, true),
+        ] {
+            let (t, exit) = playback.sample(time);
+            let before = frame(t, exit);
+            playback.set_closing(time, closing);
+            let (t, exit) = playback.sample(time);
+            assert_same_frame(before, frame(t, exit));
+        }
+        assert_eq!(playback.sample(0.9).1, 0.0);
+        assert!(playback.is_closing());
+    }
+
+    #[test]
+    fn uninterrupted_playback_keeps_original_entrance_and_half_second_exit() {
+        let mut playback = Playback::new();
+        assert_eq!(playback.sample(0.25), (0.25, 1.0));
+        playback.set_closing(1.5, true);
+        assert_eq!(playback.sample(1.75), (1.5, 0.5));
+        assert_eq!(playback.sample(2.0), (1.5, 0.0));
+    }
     #[test]
     fn closing_returns_icon_and_waves_to_center_without_an_initial_jump() {
         let open = frame(1.5, 1.0);

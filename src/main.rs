@@ -98,7 +98,7 @@ impl Palette {
 
 struct Animation {
     start: Instant,
-    close: Option<Instant>,
+    playback: motion::Playback,
     preview: bool,
     first_frame: u32,
     first_visible_logged: bool,
@@ -171,25 +171,29 @@ impl App {
         if GRAPHICS_FAILURE.with(|failure| failure.borrow().is_some()) {
             return;
         }
-        if !preview
-            && self
-                .animation
-                .borrow()
-                .as_ref()
-                .is_some_and(|a| !a.preview && a.close.is_none())
-        {
-            return;
-        }
         if !self.prepared.get() {
             self.pending_open.set(Some(preview));
             self.prepare_graphics();
             return;
         }
+        if !preview {
+            if let Some(animation) = self.animation.borrow_mut().as_mut() {
+                let was_closing = animation.playback.is_closing();
+                animation.preview = false;
+                animation
+                    .playback
+                    .set_closing(animation.start.elapsed().as_secs_f32(), false);
+                if was_closing {
+                    self.log("hotkey: pressed; animation reversed toward open");
+                }
+                return;
+            }
+        }
         self.update_frame(0.0, 1.0);
         platform::position_overlay(self.overlay.window());
         self.animation.replace(Some(Animation {
             start: Instant::now(),
-            close: None,
+            playback: motion::Playback::new(),
             preview,
             first_frame: self.rendered.get(),
             first_visible_logged: false,
@@ -288,8 +292,10 @@ impl App {
             self.pending_open.set(None);
         }
         if let Some(animation) = self.animation.borrow_mut().as_mut() {
-            if !animation.preview && animation.close.is_none() {
-                animation.close = Some(Instant::now());
+            if !animation.preview && !animation.playback.is_closing() {
+                animation
+                    .playback
+                    .set_closing(animation.start.elapsed().as_secs_f32(), true);
                 self.log("hotkey: released");
             }
         }
@@ -300,21 +306,19 @@ impl App {
             return;
         };
         let time = animation.start.elapsed().as_secs_f32();
-        if animation.preview && time >= 5.0 && animation.close.is_none() {
-            animation.close = Some(Instant::now());
+        if animation.preview && time >= 5.0 && !animation.playback.is_closing() {
+            animation.playback.set_closing(time, true);
         }
         #[cfg(windows)]
         if !animation.preview
             && time > 0.05
             && !platform::hotkey_held()
-            && animation.close.is_none()
+            && !animation.playback.is_closing()
         {
-            animation.close = Some(Instant::now());
+            animation.playback.set_closing(time, true);
             self.log("hotkey: released");
         }
-        let exit = animation.close.map_or(1.0, |close| {
-            1.0 - motion::ease(close.elapsed().as_secs_f32() / 0.5)
-        });
+        let (source_time, exit) = animation.playback.sample(time);
         if exit <= 0.0 {
             self.log(&format!(
                 "animation: {} frames in {:.2}s; worst frame gap {:.1}ms",
@@ -354,9 +358,6 @@ impl App {
             }
             return;
         }
-        let source_time = animation.close.map_or(time, |close| {
-            close.duration_since(animation.start).as_secs_f32()
-        });
         self.update_frame(source_time, exit);
     }
     fn capture(window: &slint::Window, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
