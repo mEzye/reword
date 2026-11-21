@@ -30,6 +30,8 @@ pub struct Playback {
     changed_at: f32,
     phase: f32,
     closing: bool,
+    open_speed: f32,
+    close_speed: f32,
 }
 
 impl Playback {
@@ -39,6 +41,8 @@ impl Playback {
             changed_at: 0.0,
             phase: 1.0,
             closing: false,
+            open_speed: 1.0,
+            close_speed: 1.0,
         }
     }
 
@@ -47,7 +51,12 @@ impl Playback {
     }
 
     fn phase_at(&self, time: f32) -> f32 {
-        let travel = (time - self.changed_at).max(0.0) / 0.5;
+        let speed = if self.closing {
+            self.close_speed
+        } else {
+            self.open_speed
+        };
+        let travel = (time - self.changed_at).max(0.0) * speed / 0.5;
         (self.phase + if self.closing { -travel } else { travel }).clamp(0.0, 1.0)
     }
 
@@ -55,7 +64,8 @@ impl Playback {
         let source_time = if self.closing {
             self.source_time
         } else {
-            self.source_time + (time - self.changed_at - (1.0 - self.phase) * 0.5).max(0.0)
+            self.source_time
+                + ((time - self.changed_at) * self.open_speed - (1.0 - self.phase) * 0.5).max(0.0)
         };
         (source_time, ease(self.phase_at(time)))
     }
@@ -68,6 +78,14 @@ impl Playback {
         self.phase = self.phase_at(time);
         self.changed_at = time;
         self.closing = closing;
+    }
+
+    pub fn set_speeds(&mut self, time: f32, open_speed: f32, close_speed: f32) {
+        self.source_time = self.sample(time).0;
+        self.phase = self.phase_at(time);
+        self.changed_at = time;
+        self.open_speed = open_speed;
+        self.close_speed = close_speed;
     }
 }
 
@@ -123,6 +141,32 @@ pub fn frame_with_stream(time: f32, exit: f32, stream_time: f32) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_speeds_control_entrance_and_exit_durations() {
+        let mut playback = Playback::new();
+        playback.set_speeds(0.0, 2.0, 0.5);
+        assert_eq!(playback.sample(0.25), (0.5, 1.0));
+        playback.set_closing(0.5, true);
+        assert_eq!(playback.sample(1.0), (1.0, 0.5));
+        assert_eq!(playback.sample(1.5), (1.0, 0.0));
+        playback.set_closing(1.5, false);
+        assert_eq!(playback.sample(1.75), (1.0, 1.0));
+    }
+
+    #[test]
+    fn changing_speed_mid_animation_keeps_geometry_and_reversal_continuous() {
+        let mut playback = Playback::new();
+        playback.set_closing(0.25, true);
+        let before = playback.sample(0.4);
+        playback.set_speeds(0.4, 3.0, 0.25);
+        assert_eq!(before, playback.sample(0.4));
+        assert!(playback.sample(0.5).1 < before.1);
+        let before = playback.sample(0.5);
+        playback.set_closing(0.5, false);
+        assert_eq!(before, playback.sample(0.5));
+        assert!(playback.sample(0.51).1 > before.1);
+    }
 
     #[test]
     fn waves_keep_flowing_while_the_entrance_clock_is_paused() {

@@ -3,6 +3,7 @@
 mod launcher;
 mod motion;
 mod platform;
+mod speeds;
 
 use fs2::FileExt;
 use global_hotkey::{
@@ -115,6 +116,8 @@ struct App {
     overlay: Overlay,
     preferences: Preferences,
     palette: RefCell<Palette>,
+    speeds: std::cell::Cell<speeds::Speeds>,
+    speed_save_timer: Timer,
     animation: RefCell<Option<Animation>>,
     bars: Rc<VecModel<WaveBar>>,
     animator: Timer,
@@ -145,6 +148,18 @@ impl App {
     fn show_preferences(&self) {
         if let Err(error) = self.preferences.show() {
             self.log(&format!("Settings: {error}"));
+        }
+    }
+    fn set_speeds(&self, speeds: speeds::Speeds) {
+        self.speeds.set(speeds);
+        self.preferences.set_open_speed(speeds.entrance);
+        self.preferences.set_close_speed(speeds.exit);
+        self.preferences.set_master_speed(speeds.master);
+        if let Some(animation) = self.animation.borrow_mut().as_mut() {
+            let (open, close) = speeds.effective();
+            animation
+                .playback
+                .set_speeds(animation.start.elapsed().as_secs_f32(), open, close);
         }
     }
     fn update_frame(&self, time: f32, exit: f32) {
@@ -193,9 +208,12 @@ impl App {
         }
         self.update_frame(0.0, 1.0);
         platform::position_overlay(self.overlay.window());
+        let mut playback = motion::Playback::new();
+        let (open, close) = self.speeds.get().effective();
+        playback.set_speeds(0.0, open, close);
         self.animation.replace(Some(Animation {
             start: Instant::now(),
-            playback: motion::Playback::new(),
+            playback,
             preview,
             first_frame: self.rendered.get(),
             first_visible_logged: false,
@@ -443,11 +461,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     overlay.set_bars(ModelRc::from(bars.clone()));
     let config = directory.join("colors.ini");
     let palette = Palette::load(&config);
+    let speeds = speeds::Speeds::load(&directory.join("animation.ini"));
     let rendered = Rc::new(std::cell::Cell::new(0_u32));
     let app = Rc::new(App {
         overlay,
         preferences,
         palette: RefCell::new(palette),
+        speeds: std::cell::Cell::new(speeds),
+        speed_save_timer: Timer::default(),
         animation: RefCell::new(None),
         bars,
         animator: Timer::default(),
@@ -502,6 +523,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     app.set_palette(palette);
+    app.set_speeds(speeds);
     platform::setup_overlay(app.overlay.window());
 
     let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyH);
@@ -608,6 +630,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .set_message(format!("Не вдалося зберегти: {error}").into()),
         }
     });
+
+    let weak = Rc::downgrade(&app);
+    app.preferences
+        .on_speed_changed(move |entrance, exit, master| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            app.set_speeds(speeds::Speeds::new(entrance, exit, master));
+            let weak = Rc::downgrade(&app);
+            app.speed_save_timer.start(
+                TimerMode::SingleShot,
+                Duration::from_millis(250),
+                move || {
+                    let Some(app) = weak.upgrade() else {
+                        return;
+                    };
+                    match app
+                        .speeds
+                        .get()
+                        .save(&app.config.with_file_name("animation.ini"))
+                    {
+                        Ok(()) => app.preferences.set_message("Швидкість збережено".into()),
+                        Err(error) => app
+                            .preferences
+                            .set_message(format!("Не вдалося зберегти швидкість: {error}").into()),
+                    }
+                },
+            );
+        });
 
     let capture_timer = Timer::default();
     let startup_timer = Timer::default();

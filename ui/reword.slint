@@ -1,4 +1,4 @@
-import { Button, LineEdit, VerticalBox, HorizontalBox, AboutSlint } from "std-widgets.slint";
+import { Button, LineEdit, Slider, VerticalBox, HorizontalBox, AboutSlint } from "std-widgets.slint";
 
 export struct WaveBar { x: float, height: float, alpha: float }
 
@@ -54,8 +54,8 @@ export component Overlay inherits Window {
 
 export component Preferences inherits Window {
     title: "Reword · Вигляд";
-    preferred-width: 390px;
-    preferred-height: 360px;
+    preferred-width: 440px;
+    preferred-height: 570px;
     background: #19212c;
     default-font-size: 14px;
     in-out property <string> background-hex: "#202C3A";
@@ -63,9 +63,13 @@ export component Preferences inherits Window {
     in-out property <string> message: "";
     in property <color> panel-color: #202c3a;
     in property <color> accent-color: #ffb482;
+    in-out property <float> open-speed: 1;
+    in-out property <float> close-speed: 1;
+    in-out property <float> master-speed: 1;
     callback apply(string, string);
     callback preview();
     callback preset(int);
+    callback speed-changed(float, float, float);
 
     VerticalBox {
         padding: 24px;
@@ -87,6 +91,29 @@ export component Preferences inherits Window {
             Button { text: "М'ята"; clicked => { root.preset(1); } }
             Button { text: "Світла"; clicked => { root.preset(2); } }
         }
+        Text { text: "Швидкість анімації"; color: #eff2f6; font-size: 17px; }
+        HorizontalBox {
+            Text { text: "Поява"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
+            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.open-speed;
+                changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
+            }
+            Text { text: "\{round(root.open-speed * 100) / 100}×"; color: #ffb482; preferred-width: 45px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+        HorizontalBox {
+            Text { text: "Зникнення"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
+            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.close-speed;
+                changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
+            }
+            Text { text: "\{round(root.close-speed * 100) / 100}×"; color: #ffb482; preferred-width: 45px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+        HorizontalBox {
+            Text { text: "Разом"; color: #eff2f6; preferred-width: 95px; vertical-alignment: center; }
+            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.master-speed;
+                changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
+            }
+            Text { text: "\{round(root.master-speed * 100) / 100}×"; color: #ffb482; preferred-width: 45px; horizontal-alignment: right; vertical-alignment: center; }
+        }
+        Text { text: "Ліворуч — повільніше, праворуч — швидше. «Разом» множить обидві швидкості, зберігаючи їх співвідношення. Зберігається автоматично."; color: #aeb9c8; font-size: 12px; wrap: word-wrap; }
         HorizontalBox {
             Button { text: "Застосувати"; clicked => { root.apply(root.background-hex, root.accent-hex); } }
             Button { text: "Повторити анімацію"; clicked => { root.preview(); } }
@@ -118,7 +145,7 @@ export component RewordTray inherits SystemTrayIcon {
     clicked => { root.preferences(); }
     Menu {
         MenuItem { title: "Повторити анімацію"; activated => { root.preview(); } }
-        MenuItem { title: "Кольори…"; activated => { root.preferences(); } }
+        MenuItem { title: "Вигляд і анімація…"; activated => { root.preferences(); } }
         MenuItem { title: "Про Reword"; activated => { root.about(); } }
         MenuSeparator { }
         MenuItem { title: "Вийти з Reword"; activated => { root.quit(); } }
