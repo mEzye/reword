@@ -84,6 +84,20 @@ component CommitField inherits LineEdit {
     }
 }
 
+component ColorSwatch inherits Rectangle {
+    in property <color> swatch-color;
+    in property <string> label;
+    callback clicked();
+    width: 28px; height: 28px; border-radius: 6px;
+    background: root.swatch-color; border-width: 1px;
+    border-color: focus.has-focus ? white : #ffffff40;
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    focus := FocusScope { key-pressed(event) => { if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; } return reject; } }
+    TouchArea { clicked => { focus.focus(); root.clicked(); } }
+}
+
 export component Preferences inherits Window {
     title: "Reword · Налаштування";
     preferred-width: 880px;
@@ -116,6 +130,25 @@ export component Preferences inherits Window {
     in-out property <int> voice-threads: 4;
     in-out property <string> hotkey-text: "Ctrl + Alt + H";
     in-out property <string> hotkey-message;
+    in-out property <int> picker-target: 0;
+    in-out property <float> picker-hue: 0;
+    in-out property <float> picker-saturation: 0;
+    in-out property <float> picker-value: 0;
+    in-out property <color> picker-hue-color: #ff0000;
+    property <string> picker-original;
+    callback picker-init(string);
+    callback picker-update(float, float, float);
+    function open-picker(target: int) {
+        root.picker-target = target;
+        root.picker-original = target == 0 ? root.background-hex : root.accent-hex;
+        root.picker-init(root.picker-original);
+        color-popup.show();
+    }
+    function cancel-picker() {
+        if (root.picker-target == 0) { root.background-hex = root.picker-original; }
+        else { root.accent-hex = root.picker-original; }
+        color-popup.close();
+    }
     callback apply(string, string);
     callback apply-voice(int, int, string, string, int);
     callback apply-hotkey(string);
@@ -129,6 +162,62 @@ export component Preferences inherits Window {
     changed accent-hex => { root.color-edited(1, root.accent-hex); }
 
     focus-sink := FocusScope { width: 1px; height: 1px; }
+    color-popup := PopupWindow {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 300px; height: 340px;
+        close-policy: close-on-click-outside;
+        forward-focus: popup-focus;
+        Rectangle {
+            background: #26292d; border-color: #555a60; border-width: 1px; border-radius: 8px;
+            popup-focus := FocusScope {
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) { root.cancel-picker(); return accept; }
+                    if (event.text == Key.Return) { color-popup.close(); return accept; }
+                    return reject;
+                }
+                Rectangle {
+                    x: 16px; y: 16px; width: 268px; height: 198px;
+                    background: @linear-gradient(90deg, white, root.picker-hue-color);
+                    Rectangle { background: @linear-gradient(180deg, #00000000, black); }
+                    Rectangle {
+                        x: root.picker-saturation * parent.width - self.width / 2;
+                        y: (1 - root.picker-value) * parent.height - self.height / 2;
+                        width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: white; background: transparent;
+                    }
+                    TouchArea {
+                        function update() {
+                            root.picker-saturation = max(0, min(1, self.mouse-x / self.width));
+                            root.picker-value = 1 - max(0, min(1, self.mouse-y / self.height));
+                            root.picker-update(root.picker-hue, root.picker-saturation, root.picker-value);
+                        }
+                        pointer-event(event) => { if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) { self.update(); } }
+                        moved => { if (self.pressed) { self.update(); } }
+                    }
+                }
+                Rectangle {
+                    x: 16px; y: 224px; width: 268px; height: 18px; border-radius: 4px;
+                    background: @linear-gradient(90deg, red, yellow, lime, cyan, blue, magenta, red);
+                    Rectangle { x: root.picker-hue / 360 * parent.width - 3px; width: 6px; height: parent.height; border-width: 1px; border-color: white; background: transparent; }
+                    TouchArea {
+                        function update() { root.picker-hue = max(0, min(360, self.mouse-x / self.width * 360)); root.picker-update(root.picker-hue, root.picker-saturation, root.picker-value); }
+                        pointer-event(event) => { if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) { self.update(); } }
+                        moved => { if (self.pressed) { self.update(); } }
+                    }
+                }
+                Rectangle { x: 16px; y: 254px; width: 32px; height: 32px; border-radius: 5px; background: root.picker-target == 0 ? root.panel-color : root.accent-color; border-width: 1px; border-color: #ffffff40; }
+                LineEdit {
+                    x: 58px; y: 252px; width: 226px; height: 36px;
+                    text: root.picker-target == 0 ? root.background-hex : root.accent-hex;
+                    edited(value) => { if (root.picker-target == 0) { root.background-hex = value; } else { root.accent-hex = value; } root.picker-init(value); }
+                    accepted => { color-popup.close(); }
+                    key-pressed(event) => { if (event.text == Key.Escape) { root.cancel-picker(); return accept; } return reject; }
+                }
+                Button { x: 87px; y: 296px; width: 94px; height: 30px; text: "Скасувати"; clicked => { root.cancel-picker(); } }
+                Button { x: 190px; y: 296px; width: 94px; height: 30px; text: "Готово"; clicked => { color-popup.close(); } }
+            }
+        }
+    }
     TouchArea { width: 100%; height: 100%; clicked => { focus-sink.focus(); } }
     VerticalBox {
         padding: 24px;
@@ -194,12 +283,12 @@ export component Preferences inherits Window {
                         Text { text: "Кольори"; color: #ededed; font-size: 16px; height: 24px; }
                         HorizontalBox { height: 36px; padding: 0px; spacing: 10px;
                             Text { text: "Фон панелі"; color: #a6a6ac; horizontal-stretch: 1; vertical-alignment: center; }
-                            Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.panel-color; border-width: 1px; border-color: #ffffff20; }
+                            ColorSwatch { swatch-color: root.panel-color; label: "Обрати колір фону"; clicked => { root.open-picker(0); } }
                             CommitField { text <=> root.background-hex; min-width: 112px; max-width: 112px; leave => { focus-sink.focus(); } }
                         }
                         HorizontalBox { height: 36px; padding: 0px; spacing: 10px;
                             Text { text: "Мікрофон і хвилі"; color: #a6a6ac; horizontal-stretch: 1; vertical-alignment: center; }
-                            Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.accent-color; }
+                            ColorSwatch { swatch-color: root.accent-color; label: "Обрати колір мікрофона й хвиль"; clicked => { root.open-picker(1); } }
                             CommitField { text <=> root.accent-hex; min-width: 112px; max-width: 112px; leave => { focus-sink.focus(); } }
                         }
                         HorizontalBox { height: 36px; padding: 0px; spacing: 8px;

@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod color_picker;
 mod hotkeys;
 mod launcher;
 mod motion;
@@ -259,14 +260,13 @@ impl App {
         library.index(&background, &accent)
     }
     fn refresh_palette_names(&self) {
-        let mut names: Vec<slint::SharedString> = self
+        let names: Vec<slint::SharedString> = self
             .palettes
             .borrow()
             .schemes
             .iter()
             .map(|scheme| scheme.name.clone().into())
             .collect();
-        names.push("Власна".into());
         self.preferences
             .set_palette_names(ModelRc::new(VecModel::from(names)));
     }
@@ -974,8 +974,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     accent: parse_color(&app.preferences.get_accent_hex())?,
                 }))
             })
-            .unwrap_or(app.palettes.borrow().schemes.len() as i32);
+            .unwrap_or(-1);
         app.preferences.set_palette_index(index);
+    });
+    let weak = Rc::downgrade(&app);
+    app.preferences.on_picker_init(move |text| {
+        if let (Some(app), Ok(color)) = (weak.upgrade(), parse_color(&text)) {
+            let (h, s, v) = color_picker::to_hsv(color.red(), color.green(), color.blue());
+            app.preferences.set_picker_hue(h);
+            app.preferences.set_picker_saturation(s);
+            app.preferences.set_picker_value(v);
+            app.preferences
+                .set_picker_hue_color(color_picker::color(h, 1.0, 1.0));
+        }
+    });
+    let weak = Rc::downgrade(&app);
+    app.preferences.on_picker_update(move |h, s, v| {
+        if let Some(app) = weak.upgrade() {
+            app.preferences
+                .set_picker_hue_color(color_picker::color(h, 1.0, 1.0));
+            let text = hex(color_picker::color(h, s, v));
+            if app.preferences.get_picker_target() == 0 {
+                app.preferences.set_background_hex(text.into());
+            } else {
+                app.preferences.set_accent_hex(text.into());
+            }
+        }
     });
     let weak = Rc::downgrade(&app);
     app.preferences.on_apply(move |background, accent| {

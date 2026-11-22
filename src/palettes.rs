@@ -118,7 +118,8 @@ impl Library {
         self.schemes
             .iter()
             .position(|scheme| scheme.background == background && scheme.accent == accent)
-            .unwrap_or(self.schemes.len()) as i32
+            .map(|index| index as i32)
+            .unwrap_or(-1)
     }
 
     pub fn upsert(&mut self, name: &str, background: &str, accent: &str) -> Result<(), String> {
