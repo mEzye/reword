@@ -86,11 +86,11 @@ component CommitField inherits LineEdit {
 
 export component Preferences inherits Window {
     title: "Reword · Налаштування";
-    preferred-width: 520px;
-    preferred-height: 472px;
-    min-width: 480px;
-    min-height: 360px;
-    background: #191d23;
+    preferred-width: 880px;
+    preferred-height: 640px;
+    min-width: 760px;
+    min-height: 480px;
+    background: #181a1d;
     default-font-size: 14px;
     init => { Palette.color-scheme = ColorScheme.dark; }
     in-out property <string> background-hex;
@@ -107,7 +107,18 @@ export component Preferences inherits Window {
     in-out property <int> palette-index: 0;
     in property <[string]> palette-names;
     in-out property <string> scheme-name;
+    in-out property <int> voice-mode: 0;
+    in-out property <int> voice-device: 0;
+    in-out property <string> server-url: "http://127.0.0.1:8178";
+    in-out property <string> server-token;
+    in-out property <string> voice-status: "Завантаження моделі…";
+    in-out property <string> transcript;
+    in-out property <int> voice-threads: 4;
+    in-out property <string> hotkey-text: "Ctrl + Alt + H";
+    in-out property <string> hotkey-message;
     callback apply(string, string);
+    callback apply-voice(int, int, string, string, int);
+    callback apply-hotkey(string);
     callback preview();
     callback preset(int);
     callback speed-changed(float, float, float);
@@ -118,145 +129,114 @@ export component Preferences inherits Window {
     changed accent-hex => { root.color-edited(1, root.accent-hex); }
 
     focus-sink := FocusScope { width: 1px; height: 1px; }
-    TouchArea {
-        width: 100%; height: 100%;
-        clicked => { focus-sink.focus(); }
-    }
-
+    TouchArea { width: 100%; height: 100%; clicked => { focus-sink.focus(); } }
     VerticalBox {
-        padding: 16px;
-        spacing: 8px;
+        padding: 24px;
+        spacing: 16px;
         ScrollView {
             min-height: 0px;
             vertical-stretch: 1;
             horizontal-scrollbar-policy: always-off;
             content-width: self.visible-width;
-            content-height: 360px;
-            Rectangle {
+            content-height: max(self.visible-height, root.voice-mode == 1 ? 616px : 520px);
+            VerticalBox {
                 width: parent.visible-width;
-                height: 360px;
-                TouchArea {
-                    width: 100%; height: 100%;
-                    clicked => { focus-sink.focus(); }
-                }
-                VerticalBox {
-                width: 100%; height: 100%;
+                height: max(parent.visible-height, root.voice-mode == 1 ? 616px : 520px);
                 padding: 0px;
-                padding-right: 8px;
-                spacing: 8px;
+                spacing: 16px;
                 HorizontalBox {
-                    height: 40px; padding: 0px; spacing: 16px;
-                    VerticalBox {
-                        padding: 0px; spacing: 0px;
-                        Text { text: "Reword"; color: #eef0f3; font-size: 22px; }
-                    }
+                    height: 56px; padding: 0px; spacing: 20px;
+                    Text { text: "Reword"; color: #ededed; font-size: 22px; vertical-alignment: center; horizontal-stretch: 1; }
                     Rectangle {
                         width: 164px; height: 36px; border-radius: 18px;
-                        background: root.panel-color;
-                        border-width: 1px; border-color: #ffffff16;
-                        Image { x: 12px; y: 8px; width: 20px; height: 20px;
-                            source: @image-url("../assets/mic.svg"); colorize: root.accent-color;
-                        }
+                        background: root.panel-color; border-width: 1px; border-color: #ffffff16;
+                        Image { x: 12px; y: 8px; width: 20px; height: 20px; source: @image-url("../assets/mic.svg"); colorize: root.accent-color; }
                         for h[i] in [8, 17, 11, 22, 9, 15, 6, 20, 12, 7, 16, 10]: Rectangle {
-                            x: 45px + i * 8px; y: (36px - h * 1px) / 2;
-                            width: 3px; height: h * 1px; border-radius: 1.5px;
-                            background: root.accent-color;
+                            x: 45px + i * 8px; y: (36px - h * 1px) / 2; width: 3px; height: h * 1px;
+                            border-radius: 1.5px; background: root.accent-color;
                         }
                     }
                 }
                 HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 12px;
-                    Text { text: "Фон панелі"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
-                    Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.panel-color; border-width: 1px; border-color: #ffffff20; }
-                    CommitField { text <=> root.background-hex; min-width: 112px; max-width: 112px; horizontal-stretch: 0;
-                        leave => { focus-sink.focus(); }
+                    padding: 0px; spacing: 24px;
+                    VerticalBox {
+                        horizontal-stretch: 1; padding: 0px; spacing: 8px;
+                        Text { text: "Диктування"; color: #ededed; font-size: 16px; height: 24px; }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Розпізнавання"; color: #a6a6ac; width: 112px; vertical-alignment: center; }
+                            ComboBox { horizontal-stretch: 1; model: ["На цьому комп’ютері", "Окремий сервер"]; current-index <=> root.voice-mode; }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Обчислення"; color: #a6a6ac; width: 112px; vertical-alignment: center; }
+                            ComboBox { horizontal-stretch: 1; enabled: root.voice-mode == 0; model: ["Процесор", "NVIDIA CUDA", "Автоматично"]; current-index <=> root.voice-device; }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Потоки CPU"; color: #a6a6ac; width: 112px; vertical-alignment: center; }
+                            ComboBox { horizontal-stretch: 1; enabled: root.voice-mode == 0; model: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"]; current-index: root.voice-threads - 1; selected => { root.voice-threads = self.current-index + 1; } }
+                        }
+                        if root.voice-mode == 1: CommitField { text <=> root.server-url; placeholder-text: "Адреса сервера"; height: 36px; leave => { focus-sink.focus(); } }
+                        if root.voice-mode == 1: CommitField { text <=> root.server-token; input-type: password; placeholder-text: "Ключ сервера"; height: 36px; leave => { focus-sink.focus(); } }
+                        Button { text: "Застосувати"; height: 36px; clicked => { root.apply-voice(root.voice-mode, root.voice-device, root.server-url, root.server-token, root.voice-threads); } }
+                        Text { text: root.voice-status; color: #a6a6ac; wrap: word-wrap; min-height: 32px; }
+                        Text { text: "Останній результат"; color: #a6a6ac; height: 20px; }
+                        TextEdit { text <=> root.transcript; read-only: true; height: 72px; }
+                        Rectangle { height: 1px; background: #ffffff16; }
+                        Text { text: "Гарячі клавіші"; color: #ededed; font-size: 16px; height: 24px; }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Диктування"; color: #a6a6ac; width: 112px; vertical-alignment: center; }
+                            CommitField { text <=> root.hotkey-text; horizontal-stretch: 1; commit(value) => { root.apply-hotkey(value); } leave => { focus-sink.focus(); } }
+                            Button { text: "Змінити"; clicked => { root.apply-hotkey(root.hotkey-text); } }
+                        }
+                        Text { text: root.hotkey-message; color: #ffb482; wrap: word-wrap; min-height: 20px; }
                     }
-                }
-                HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 12px;
-                    Text { text: "Мікрофон і хвилі"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
-                    Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.accent-color; }
-                    CommitField { text <=> root.accent-hex; min-width: 112px; max-width: 112px; horizontal-stretch: 0;
-                        leave => { focus-sink.focus(); }
+                    VerticalBox {
+                        horizontal-stretch: 1; padding: 0px; spacing: 8px;
+                        Text { text: "Кольори"; color: #ededed; font-size: 16px; height: 24px; }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 10px;
+                            Text { text: "Фон панелі"; color: #a6a6ac; horizontal-stretch: 1; vertical-alignment: center; }
+                            Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.panel-color; border-width: 1px; border-color: #ffffff20; }
+                            CommitField { text <=> root.background-hex; min-width: 112px; max-width: 112px; leave => { focus-sink.focus(); } }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 10px;
+                            Text { text: "Мікрофон і хвилі"; color: #a6a6ac; horizontal-stretch: 1; vertical-alignment: center; }
+                            Rectangle { width: 24px; height: 24px; border-radius: 6px; background: root.accent-color; }
+                            CommitField { text <=> root.accent-hex; min-width: 112px; max-width: 112px; leave => { focus-sink.focus(); } }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Схема"; color: #a6a6ac; horizontal-stretch: 1; vertical-alignment: center; }
+                            ComboBox { min-width: 190px; model: root.palette-names; current-index <=> root.palette-index; selected => { root.preset(self.current-index); } }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            CommitField { text <=> root.scheme-name; placeholder-text: "Назва своєї схеми"; horizontal-stretch: 1; leave => { focus-sink.focus(); } }
+                            Button { text: "Зберегти"; enabled: root.scheme-name != ""; clicked => { root.save-scheme(root.scheme-name, root.background-hex, root.accent-hex); } }
+                        }
+                        Button { text: "Застосувати кольори"; height: 36px; clicked => { root.apply(root.background-hex, root.accent-hex); } }
+                        Rectangle { height: 1px; background: #ffffff16; }
+                        Text { text: "Анімація"; color: #ededed; font-size: 16px; height: 24px; }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Поява"; color: #a6a6ac; width: 72px; vertical-alignment: center; }
+                            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.open-speed; horizontal-stretch: 1; changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); } }
+                            CommitField { text <=> root.open-speed-text; min-width: 60px; max-width: 60px; horizontal-alignment: right; commit(value) => { root.speed-edited(0, value); } leave => { focus-sink.focus(); } }
+                            Text { text: "×"; color: #a6a6ac; width: 12px; vertical-alignment: center; }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Зникнення"; color: #a6a6ac; width: 72px; vertical-alignment: center; }
+                            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.close-speed; horizontal-stretch: 1; changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); } }
+                            CommitField { text <=> root.close-speed-text; min-width: 60px; max-width: 60px; horizontal-alignment: right; commit(value) => { root.speed-edited(1, value); } leave => { focus-sink.focus(); } }
+                            Text { text: "×"; color: #a6a6ac; width: 12px; vertical-alignment: center; }
+                        }
+                        HorizontalBox { height: 36px; padding: 0px; spacing: 8px;
+                            Text { text: "Разом"; color: #a6a6ac; width: 72px; vertical-alignment: center; }
+                            Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.master-speed; horizontal-stretch: 1; changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); } }
+                            CommitField { text <=> root.master-speed-text; min-width: 60px; max-width: 60px; horizontal-alignment: right; commit(value) => { root.speed-edited(2, value); } leave => { focus-sink.focus(); } }
+                            Text { text: "×"; color: #a6a6ac; width: 12px; vertical-alignment: center; }
+                        }
+                        Button { text: "Повторити анімацію"; height: 36px; clicked => { root.preview(); } }
                     }
-                }
-                HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 12px;
-                    Text { text: "Колірна схема"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
-                    ComboBox {
-                        min-width: 192px; max-width: 192px;
-                        model: root.palette-names;
-                        current-index <=> root.palette-index;
-                        selected => { root.preset(self.current-index); }
-                    }
-                }
-                HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 8px;
-                    CommitField {
-                        text <=> root.scheme-name;
-                        placeholder-text: "Назва своєї схеми";
-                        min-width: 120px; horizontal-stretch: 1;
-                        leave => { focus-sink.focus(); }
-                    }
-                    Button {
-                        text: "Зберегти схему";
-                        min-width: 144px; max-width: 144px;
-                        enabled: root.scheme-name != "";
-                        clicked => { root.save-scheme(root.scheme-name, root.background-hex, root.accent-hex); }
-                    }
-                }
-                HorizontalBox {
-                    height: 20px; padding: 0px;
-                    Text { text: "Швидкість анімації"; color: #eef0f3; font-size: 16px; horizontal-stretch: 1; }
-                }
-                HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 8px;
-                    Text { text: "Поява"; color: #eef0f3; width: 88px; vertical-alignment: center; }
-                    Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.open-speed; min-width: 120px; horizontal-stretch: 1;
-                        changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
-                    }
-                    CommitField { text <=> root.open-speed-text; min-width: 72px; max-width: 72px; horizontal-stretch: 0; horizontal-alignment: right;
-                        commit(value) => { root.speed-edited(0, value); }
-                        leave => { focus-sink.focus(); }
-                    }
-                    Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
-                }
-                HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 8px;
-                    Text { text: "Зникнення"; color: #eef0f3; width: 88px; vertical-alignment: center; }
-                    Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.close-speed; min-width: 120px; horizontal-stretch: 1;
-                        changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
-                    }
-                    CommitField { text <=> root.close-speed-text; min-width: 72px; max-width: 72px; horizontal-stretch: 0; horizontal-alignment: right;
-                        commit(value) => { root.speed-edited(1, value); }
-                        leave => { focus-sink.focus(); }
-                    }
-                    Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
-                }
-                HorizontalBox {
-                    height: 32px; padding: 0px; spacing: 8px;
-                    Text { text: "Разом"; color: #eef0f3; width: 88px; vertical-alignment: center; }
-                    Slider { minimum: 0.25; maximum: 3; step: 0.05; value <=> root.master-speed; min-width: 120px; horizontal-stretch: 1;
-                        changed => { root.speed-changed(root.open-speed, root.close-speed, root.master-speed); }
-                    }
-                    CommitField { text <=> root.master-speed-text; min-width: 72px; max-width: 72px; horizontal-stretch: 0; horizontal-alignment: right;
-                        commit(value) => { root.speed-edited(2, value); }
-                        leave => { focus-sink.focus(); }
-                    }
-                    Text { text: "×"; color: #a6adb8; width: 12px; vertical-alignment: center; }
-                }
                 }
             }
         }
-        HorizontalBox {
-            height: 36px; padding: 0px; spacing: 8px;
-            Button { text: "Застосувати кольори"; clicked => { root.apply(root.background-hex, root.accent-hex); } }
-            Button { text: "Повторити анімацію"; clicked => { root.preview(); } }
-        }
-        HorizontalBox {
-            height: 20px; padding: 0px; spacing: 8px;
-            Text { text: root.message; color: #ffb482; font-size: 12px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
-        }
+        Text { text: root.message; color: #ffb482; font-size: 12px; height: 18px; overflow: elide; }
     }
 }
 export component About inherits Window {
@@ -266,65 +246,23 @@ export component About inherits Window {
     VerticalBox {
         padding: 24px;
         Text { text: "Reword 0.3.3"; font-size: 24px; horizontal-alignment: center; }
-        Text { text: "Візуальний прототип диктовки\nІконка мікрофона: Lucide, ISC"; horizontal-alignment: center; }
+        Text { text: "Голосова диктовка\nІконка мікрофона: Lucide, ISC"; horizontal-alignment: center; }
         AboutSlint { }
-    }
-}
-
-export component VoiceSettings inherits Window {
-    title: "Reword · Голос";
-    preferred-width: 480px;
-    preferred-height: 500px;
-    min-width: 440px;
-    background: #191d23;
-    default-font-size: 14px;
-    in-out property <int> mode: 0;
-    in-out property <int> device: 0;
-    in-out property <string> server-url: "http://127.0.0.1:8178";
-    in-out property <string> server-token;
-    in-out property <string> status: "Завантаження моделі…";
-    in-out property <string> transcript;
-    callback apply(int, int, string, string);
-    voice-focus-sink := FocusScope { width: 1px; height: 1px; }
-    TouchArea { width: 100%; height: 100%; clicked => { voice-focus-sink.focus(); } }
-    VerticalBox {
-        padding: 16px; spacing: 12px;
-        Text { text: "Розпізнавання голосу"; color: #eef0f3; font-size: 20px; height: 28px; }
-        HorizontalBox {
-            height: 32px; padding: 0px; spacing: 12px;
-            Text { text: "Де розпізнавати"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
-            ComboBox { min-width: 220px; max-width: 220px; model: ["На цьому комп’ютері", "Окремий сервер"]; current-index <=> root.mode; }
-        }
-        HorizontalBox {
-            height: 32px; padding: 0px; spacing: 12px;
-            Text { text: "Обчислення"; color: #eef0f3; vertical-alignment: center; horizontal-stretch: 1; }
-            ComboBox { min-width: 220px; max-width: 220px; enabled: root.mode == 0; model: ["Процесор", "NVIDIA CUDA", "Автоматично"]; current-index <=> root.device; }
-        }
-        CommitField { text <=> root.server-url; placeholder-text: "Адреса сервера"; enabled: root.mode == 1; height: 32px;
-            leave => { voice-focus-sink.focus(); }
-        }
-        CommitField { text <=> root.server-token; input-type: password; placeholder-text: "Ключ сервера"; enabled: root.mode == 1; height: 32px;
-            leave => { voice-focus-sink.focus(); }
-        }
-        Button { text: "Застосувати"; height: 36px; clicked => { root.apply(root.mode, root.device, root.server-url, root.server-token); } }
-        Text { text: root.status; color: #a6adb8; wrap: word-wrap; min-height: 36px; }
-        TextEdit { text <=> root.transcript; read-only: true; min-height: 72px; vertical-stretch: 1; }
     }
 }
 
 export component RewordTray inherits SystemTrayIcon {
     icon: @image-url("../assets/tray.svg");
-    tooltip: "Reword · Ctrl+Alt+H";
+    in property <string> hotkey-tooltip: "Reword · Ctrl+Alt+H";
+    tooltip: root.hotkey-tooltip;
     callback preview();
     callback preferences();
-    callback voice-settings();
     callback about();
     callback quit();
     clicked => { root.preferences(); }
     Menu {
         MenuItem { title: "Повторити анімацію"; activated => { root.preview(); } }
-        MenuItem { title: "Вигляд і анімація…"; activated => { root.preferences(); } }
-        MenuItem { title: "Голос…"; activated => { root.voice-settings(); } }
+        MenuItem { title: "Налаштування…"; activated => { root.preferences(); } }
         MenuItem { title: "Про Reword"; activated => { root.about(); } }
         MenuSeparator { }
         MenuItem { title: "Вийти з Reword"; activated => { root.quit(); } }

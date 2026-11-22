@@ -1,6 +1,8 @@
 mod audio;
+mod live_output;
 mod native;
 pub mod server;
+mod streaming;
 
 use enigo::Keyboard;
 use std::{
@@ -9,7 +11,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -92,6 +94,7 @@ impl Settings {
 pub enum Event {
     Status(String),
     Error(String),
+    Preview(String),
     Transcript {
         text: String,
         inserted: Result<(), String>,
@@ -104,15 +107,11 @@ enum CaptureCommand {
     Stop,
     Shutdown,
 }
-struct Job {
-    samples: Vec<f32>,
-    target: usize,
-}
-
 pub struct Voice {
     commands: mpsc::Sender<CaptureCommand>,
     level: Arc<AtomicU32>,
     cancelled: Arc<AtomicBool>,
+    jobs: Arc<streaming::Mailbox>,
 }
 
 pub fn target() -> usize {
@@ -129,34 +128,23 @@ pub fn target() -> usize {
 pub fn insert(text: &str, expected: usize) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::{
-            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_MENU},
-            WindowsAndMessaging::GetWindowThreadProcessId,
-        };
-        let start = Instant::now();
-        while unsafe {
-            GetAsyncKeyState(VK_CONTROL as i32) < 0
-                || GetAsyncKeyState(VK_MENU as i32) < 0
-                || GetAsyncKeyState(0x48) < 0
-        } {
-            if start.elapsed() > Duration::from_secs(5) {
-                return Err("Відпусти Ctrl+Alt+H; текст доступний у вікні «Голос»".into());
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
         let mut pid = 0;
         unsafe {
             GetWindowThreadProcessId(expected as *mut std::ffi::c_void, &mut pid);
         }
         if expected == 0 || expected != target() || pid == std::process::id() {
-            return Err("Фокус змінився; текст доступний у вікні «Голос»".into());
+            return Err(
+                "Фокус змінився; текст доступний у полі останнього транскрипту в Налаштуваннях"
+                    .into(),
+            );
         }
     }
     let _ = expected;
     let mut keyboard = enigo::Enigo::new(&enigo::Settings::default()).map_err(|e| e.to_string())?;
-    keyboard
-        .text(&format!("{text} "))
-        .map_err(|e| e.to_string())
+    // Windows Enigo submits Unicode packets in one batch, rather than simulating
+    // letter keys / shortcuts. Keep the physical push-to-talk modifiers intact.
+    keyboard.text(text).map_err(|e| e.to_string())
 }
 
 impl Voice {
@@ -166,7 +154,10 @@ impl Voice {
         notify: impl Fn(Event) + Send + Sync + 'static,
     ) -> Self {
         let notify = Arc::new(notify);
-        let (jobs, receiver) = mpsc::sync_channel::<Job>(4);
+        let jobs = Arc::new(streaming::Mailbox::default());
+        let worker_jobs = jobs.clone();
+        let active = Arc::new(AtomicU64::new(0));
+        let worker_active = active.clone();
         let report = notify.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancellation = cancelled.clone();
@@ -177,18 +168,57 @@ impl Voice {
                 Ok(backend) => report(Event::Status(format!("Готово · {backend}"))),
                 Err(error) => report(Event::Error(error)),
             }
-            while let Ok(job) = receiver.recv() {
+            let mut decoder = streaming::Decoder::default();
+            let mut output = live_output::LiveOutput::default();
+            let mut output_id = 0;
+            let mut output_error = None;
+            while let Some(job) = worker_jobs.take() {
                 if cancellation.load(Ordering::Relaxed) {
                     break;
                 }
-                report(Event::Status("Розпізнавання…".into()));
+                if job.finished {
+                    report(Event::Status("Завершення розпізнавання…".into()));
+                }
                 let start = Instant::now();
-                match client.transcribe(&job.samples) {
+                if output_id != job.id {
+                    output = live_output::LiveOutput::default();
+                    output_id = job.id;
+                    output_error = None;
+                }
+                let result = decoder.update(
+                    &job,
+                    |audio| client.transcribe(audio),
+                    |text, committed| {
+                        if !cancellation.load(Ordering::Relaxed) {
+                            if let Err(error) = output.update(&text, &committed, false, |suffix| {
+                                insert(suffix, job.target)
+                            }) {
+                                if output_error.is_none() {
+                                    report(Event::Error(error.clone()));
+                                    output_error = Some(error);
+                                }
+                            }
+                        }
+                        if !cancellation.load(Ordering::Relaxed)
+                            && worker_active.load(Ordering::Relaxed) == job.id
+                        {
+                            report(Event::Preview(text));
+                        }
+                    },
+                );
+                if !job.finished {
+                    if let Err(error) = result {
+                        report(Event::Error(error));
+                    }
+                    continue;
+                }
+                match result {
                     Ok(text) if !text.is_empty() => {
                         if cancellation.load(Ordering::Relaxed) {
                             break;
                         }
-                        let inserted = insert(&text, job.target);
+                        let inserted =
+                            output.update(&text, &text, true, |suffix| insert(suffix, job.target));
                         report(Event::Transcript {
                             text,
                             inserted,
@@ -203,19 +233,60 @@ impl Voice {
         let (commands, receiver) = mpsc::channel();
         let level = Arc::new(AtomicU32::new(0f32.to_bits()));
         let volume = level.clone();
+        let capture_jobs = jobs.clone();
         thread::spawn(move || {
             let mut capture = None;
             let mut target = 0;
-            while let Ok(command) = receiver.recv() {
+            let mut id = 0_u64;
+            let mut next_preview = Instant::now();
+            loop {
+                let command = match receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(command) => command,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if Instant::now() >= next_preview {
+                            next_preview = Instant::now() + Duration::from_millis(800);
+                            if let Some(stream) = capture.as_ref() {
+                                match audio::Capture::snapshot(stream) {
+                                    Ok(samples) if samples.len() >= audio::RATE => {
+                                        let _ = capture_jobs.publish(streaming::Job {
+                                            id,
+                                            target,
+                                            samples,
+                                            finished: false,
+                                        });
+                                    }
+                                    Ok(_) => {}
+                                    Err(error) => {
+                                        capture = None;
+                                        volume.store(0f32.to_bits(), Ordering::Relaxed);
+                                        notify(Event::Error(error));
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                };
                 match command {
                     CaptureCommand::Start(window) => {
                         if capture.is_some() {
                             continue;
                         }
+                        if !capture_jobs.can_start() {
+                            notify(Event::Error(
+                                "Дочекайся завершення попередніх записів".into(),
+                            ));
+                            continue;
+                        }
                         target = window;
                         match audio::Capture::start(volume.clone()) {
                             Ok(stream) => {
+                                id += 1;
+                                active.store(id, Ordering::Relaxed);
                                 capture = Some(stream);
+                                next_preview = Instant::now() + Duration::from_secs(1);
+                                notify(Event::Preview(String::new()));
                                 notify(Event::Status("Запис…".into()));
                             }
                             Err(error) => notify(Event::Error(error)),
@@ -232,7 +303,15 @@ impl Voice {
                                         / samples.len() as f32;
                                     if power < 0.000001 {
                                         notify(Event::Status("Тиша".into()));
-                                    } else if jobs.try_send(Job { samples, target }).is_err() {
+                                    } else if capture_jobs
+                                        .publish(streaming::Job {
+                                            id,
+                                            samples,
+                                            target,
+                                            finished: true,
+                                        })
+                                        .is_err()
+                                    {
                                         notify(Event::Error(
                                             "Черга розпізнавання заповнена".into(),
                                         ));
@@ -251,6 +330,7 @@ impl Voice {
             commands,
             level,
             cancelled,
+            jobs,
         }
     }
     pub fn start(&self) {
@@ -267,6 +347,7 @@ impl Voice {
 impl Drop for Voice {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
+        self.jobs.close();
         let _ = self.commands.send(CaptureCommand::Shutdown);
     }
 }
@@ -491,4 +572,92 @@ pub fn transcribe_file(path: &Path, base: &Path) -> Result<serde_json::Value, St
     Ok(
         serde_json::json!({"text":text,"elapsed_seconds":start.elapsed().as_secs_f64(),"backend":client.backend}),
     )
+}
+
+/// Feed a WAV at microphone speed through the same coalescing/phrase decoder.
+/// This exercises live inference without injecting text or using a microphone.
+pub fn transcribe_stream_file(path: &Path, base: &Path) -> Result<serde_json::Value, String> {
+    let mut settings = Settings::load(&base.join("speech.ini"));
+    if let Some(device) =
+        std::env::args().find_map(|arg| arg.strip_prefix("--device=").map(str::to_owned))
+    {
+        if !["cpu", "cuda", "auto"].contains(&device.as_str()) {
+            return Err("Device must be cpu, cuda or auto".into());
+        }
+        settings.device = device;
+    }
+    let samples = audio::read_wav(&fs::read(path).map_err(|e| e.to_string())?)?;
+    let duration = samples.len() as f64 / audio::RATE as f64;
+    let mut client = Client::new(settings, base.into(), Arc::new(AtomicBool::new(false)));
+    client.prepare()?;
+    let mailbox = Arc::new(streaming::Mailbox::default());
+    let producer = mailbox.clone();
+    let start = Instant::now();
+    let capture = thread::spawn(move || {
+        let mut end = audio::RATE;
+        while end < samples.len() {
+            let due = start + Duration::from_secs_f64(end as f64 / audio::RATE as f64);
+            thread::sleep(due.saturating_duration_since(Instant::now()));
+            if producer
+                .publish(streaming::Job {
+                    id: 1,
+                    target: 0,
+                    samples: samples[..end].to_vec(),
+                    finished: false,
+                })
+                .is_err()
+            {
+                return;
+            }
+            end += audio::RATE * 4 / 5;
+        }
+        let due = start + Duration::from_secs_f64(duration);
+        thread::sleep(due.saturating_duration_since(Instant::now()));
+        let _ = producer.publish(streaming::Job {
+            id: 1,
+            target: 0,
+            samples,
+            finished: true,
+        });
+    });
+    let mut decoder = streaming::Decoder::default();
+    let mut previews = Vec::new();
+    let mut insertions = Vec::new();
+    let mut output = live_output::LiveOutput::default();
+    let mut insertion_error = None;
+    let result = loop {
+        let job = mailbox.take().ok_or("Stream closed")?;
+        let text = decoder.update(&job, |audio| client.transcribe(audio), |text, committed| {
+            let elapsed = start.elapsed().as_secs_f64();
+            previews.push(serde_json::json!({"at_seconds":elapsed,"before_release":elapsed < duration,"text":text}));
+            if let Err(error) = output.update(&text, &committed, false, |suffix| {
+                insertions.push(serde_json::json!({"at_seconds":elapsed,"before_release":elapsed < duration,"text":suffix}));
+                Ok(())
+            }) { insertion_error = Some(error); }
+        });
+        match text {
+            Err(error) => break Err(error),
+            Ok(text) if job.finished => break Ok(text),
+            _ => {}
+        }
+    };
+    mailbox.close();
+    let _ = capture.join();
+    let text = result?;
+    let final_elapsed = start.elapsed().as_secs_f64();
+    if let Err(error) = output.update(&text, &text, true, |suffix| {
+        insertions.push(
+            serde_json::json!({"at_seconds":final_elapsed,"before_release":false,"text":suffix}),
+        );
+        Ok(())
+    }) {
+        insertion_error = Some(error);
+    }
+    Ok(serde_json::json!({
+        "text":text,"backend":client.backend,"audio_seconds":duration,
+        "elapsed_seconds":start.elapsed().as_secs_f64(),
+        "after_release_seconds":(start.elapsed().as_secs_f64() - duration).max(0.0),
+        "previews":previews,
+        "insertions":insertions,"inserted_text":output.written(),"insertion_error":insertion_error,
+    }))
 }

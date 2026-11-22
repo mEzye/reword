@@ -85,6 +85,31 @@ impl Capture {
         }
         resample(&input, self.rate)
     }
+
+    pub fn snapshot(&self) -> Result<Vec<f32>, String> {
+        snapshot_samples(&self.samples, &self.error, self.rate)
+    }
+}
+
+fn snapshot_samples(
+    samples: &Mutex<Vec<f32>>,
+    error: &Mutex<Option<String>>,
+    rate: usize,
+) -> Result<Vec<f32>, String> {
+    let capture_error = error.lock().unwrap().clone();
+    if let Some(error) = capture_error {
+        return Err(error);
+    }
+
+    let input = {
+        let samples = samples.lock().unwrap();
+        if samples.len() >= rate * MAX_SECONDS {
+            return Err("Запис задовгий: максимум 2 хвилини".into());
+        }
+        samples.clone()
+    };
+
+    resample(&input, rate)
 }
 
 pub fn resample(input: &[f32], rate: usize) -> Result<Vec<f32>, String> {
@@ -213,5 +238,35 @@ mod tests {
         let energy = |v: &[f32]| v[1000..15000].iter().map(|v| v * v).sum::<f32>();
         assert!(energy(&low) > 1000.0);
         assert!(energy(&high) < energy(&low) * 0.01);
+    }
+
+    #[test]
+    fn snapshots_resample_without_mutating_the_raw_buffer() {
+        let error = Mutex::new(None);
+        for rate in [44_100, 48_000] {
+            let raw: Vec<_> = (0..rate)
+                .map(|i| (std::f32::consts::TAU * 1_000.0 * i as f32 / rate as f32).sin())
+                .collect();
+            let samples = Mutex::new(raw.clone());
+
+            let first = snapshot_samples(&samples, &error, rate).unwrap();
+            let second = snapshot_samples(&samples, &error, rate).unwrap();
+
+            assert_eq!(first.len(), RATE);
+            assert_eq!(first, second);
+            assert_eq!(*samples.lock().unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn snapshot_reports_but_does_not_consume_capture_errors() {
+        let error = Mutex::new(Some("capture failed".to_owned()));
+        let samples = Mutex::new(vec![0.0; RATE]);
+
+        assert_eq!(
+            snapshot_samples(&samples, &error, RATE).unwrap_err(),
+            "capture failed"
+        );
+        assert_eq!(error.lock().unwrap().as_deref(), Some("capture failed"));
     }
 }
