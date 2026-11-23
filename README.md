@@ -20,7 +20,7 @@ Reword доступний для Windows x64. Версій для macOS і Linux
 Для збірки потрібні Git, Rust із Cargo та компілятор C++ для Windows.
 
 ```powershell
-git clone --branch feature/voice-dictation https://github.com/mEzye/reword.git
+git clone https://github.com/mEzye/reword.git
 cd reword
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-speech.ps1
@@ -35,7 +35,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-speech.ps1
 2. Утримуйте Ctrl+Alt+H і говоріть.
 3. Відпустіть клавіші, коли закінчите.
 
-Reword записує мікрофон лише під час утримання клавіш. Розпізнавання має затримку, яка залежить від обладнання. Тривалість однієї диктовки обмежена двома хвилинами.
+Reword записує мікрофон лише під час утримання клавіш. Розпізнавання має затримку, яка залежить від обладнання. Тривалість однієї диктовки обмежена десятьма хвилинами.
 
 Якщо перейти до іншого вікна під час диктування, Reword припинить вводити текст. Повний результат можна скопіювати з поля "Останній результат" у налаштуваннях.
 
@@ -50,7 +50,7 @@ Reword записує мікрофон лише під час утримання
 - У розділі "Кольори" виберіть готову схему або натисніть на кольоровий квадратик, щоб відкрити вибір кольору. Власну схему можна зберегти під окремою назвою.
 - У розділі "Анімація" змініть швидкість появи й зникнення панелі.
 
-Інструкції для [налаштування NVIDIA та окремого сервера](https://github.com/mEzye/reword/blob/feature/voice-dictation/SPEECH.md).
+Інструкції для [налаштування NVIDIA та окремого сервера](SPEECH.md).
 
 ## Для розробників
 
@@ -60,10 +60,10 @@ Reword записує мікрофон лише під час утримання
 cargo test --locked --profile fast
 ```
 
-Опис розпізнавання та серверного API міститься в [SPEECH.md](https://github.com/mEzye/reword/blob/feature/voice-dictation/SPEECH.md). Зміни залежностей описані у [vendor/REWORD-PATCHES.md](vendor/REWORD-PATCHES.md).
+Опис розпізнавання та серверного API міститься в [SPEECH.md](SPEECH.md). Зміни залежностей описані у [vendor/REWORD-PATCHES.md](vendor/REWORD-PATCHES.md).
 
 ## Ліцензії залежностей
 
 - [Slint](assets/SLINT-LICENSE.md), Slint Royalty-free Desktop, Mobile, and Web Applications License 2.0.
 - [Lucide](assets/LUCIDE-LICENSE.txt), ISC.
-- Parakeet UK, CC BY 4.0. transcribe.cpp, MIT. [Атрибуція моделі та рушія](https://github.com/mEzye/reword/blob/feature/voice-dictation/assets/PARAKEET-NOTICE.md).
+- Parakeet UK, CC BY 4.0. transcribe.cpp, MIT. [Атрибуція моделі та рушія](assets/PARAKEET-NOTICE.md).

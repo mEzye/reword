@@ -235,11 +235,16 @@ fn no_activate(window: &winit::window::Window) {
 }
 
 #[cfg(windows)]
-pub fn hotkey_held() -> bool {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_MENU};
+pub fn hotkey_held(hotkey: global_hotkey::hotkey::HotKey) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    let Ok(keys) = crate::hotkeys::windows_release_keys(hotkey) else {
+        return false;
+    };
     unsafe {
-        GetAsyncKeyState(VK_CONTROL as i32) < 0
-            && GetAsyncKeyState(VK_MENU as i32) < 0
-            && GetAsyncKeyState(0x48) < 0
+        keys.required.iter().all(|key| GetAsyncKeyState(*key) < 0)
+            && keys
+                .alternatives
+                .iter()
+                .all(|group| group.iter().any(|key| GetAsyncKeyState(*key) < 0))
     }
 }

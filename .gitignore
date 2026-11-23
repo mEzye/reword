@@ -13,5 +13,11 @@
 /colors.ini
 /palettes.ini
 /animation.ini
+/speech.ini
+/hotkeys.ini
+/speech-runtime/
+/models/
+/.speech-*
+/speech-server.token
 /.env
 /.env.*

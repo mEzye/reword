@@ -1,16 +1,16 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod color_picker;
+mod hotkeys;
 mod launcher;
 mod motion;
 mod palettes;
 mod platform;
+mod speech;
 mod speeds;
 
 use fs2::FileExt;
-use global_hotkey::{
-    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
-    hotkey::{Code, HotKey, Modifiers},
-};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::{
     cell::RefCell,
@@ -125,6 +125,14 @@ thread_local! {
 struct App {
     overlay: Overlay,
     preferences: Preferences,
+    tray: slint::Weak<RewordTray>,
+    hotkey_manager: RefCell<Option<GlobalHotKeyManager>>,
+    current_hotkey: std::cell::Cell<HotKey>,
+    hotkey_registered: std::cell::Cell<bool>,
+    voice: RefCell<Option<speech::Voice>>,
+    voice_generation: std::cell::Cell<u64>,
+    dictating: std::cell::Cell<bool>,
+    voice_level: std::cell::Cell<f32>,
     palette: RefCell<Palette>,
     palettes: RefCell<palettes::Library>,
     speeds: std::cell::Cell<speeds::Speeds>,
@@ -143,6 +151,84 @@ struct App {
 }
 
 impl App {
+    fn start_voice(self: &Rc<Self>) {
+        self.stop_recording();
+        let settings = speech::Settings::load(&self.config.with_file_name("speech.ini"));
+        if !self.config.with_file_name("speech.ini").exists() {
+            if let Err(error) = settings.save(&self.config.with_file_name("speech.ini")) {
+                self.log(&error);
+            }
+        }
+        self.preferences
+            .set_voice_mode(if settings.mode == "server" { 1 } else { 0 });
+        self.preferences
+            .set_voice_device(match settings.device.as_str() {
+                "cuda" => 1,
+                "auto" => 2,
+                _ => 0,
+            });
+        self.preferences.set_server_url(settings.url.clone().into());
+        self.preferences
+            .set_server_token(settings.token.clone().into());
+        self.preferences.set_voice_threads(settings.threads as i32);
+        let generation = self.voice_generation.get() + 1;
+        self.voice_generation.set(generation);
+        self.voice.take();
+        let directory = self.config.parent().unwrap().to_path_buf();
+        let voice = speech::Voice::spawn(settings, directory, move |event| {
+            let _ = slint::invoke_from_event_loop(move || {
+                CONTROLLER.with(|controller| {
+                    if let Some(app) = controller.borrow().upgrade() {
+                        if app.voice_generation.get() == generation {
+                            app.voice_event(event);
+                        }
+                    }
+                });
+            });
+        });
+        self.voice.replace(Some(voice));
+    }
+    fn voice_event(&self, event: speech::Event) {
+        match event {
+            speech::Event::Status(status) => self.preferences.set_voice_status(status.into()),
+            speech::Event::Preview(text) => {
+                self.preferences.set_transcript(text.into());
+            }
+            speech::Event::Error(error) => {
+                self.log(&format!("Speech error: {error}"));
+                self.preferences.set_voice_status(error.into());
+            }
+            speech::Event::Transcript {
+                text,
+                inserted,
+                elapsed,
+            } => {
+                self.preferences.set_transcript(text.into());
+                self.log(&format!("Speech complete: {elapsed:.2}s"));
+                self.preferences.set_voice_status(
+                    match inserted {
+                        Ok(()) => format!("Вставлено · {elapsed:.1} с"),
+                        Err(error) => error,
+                    }
+                    .into(),
+                );
+            }
+        }
+    }
+    fn start_recording(&self) {
+        if !self.dictating.replace(true) {
+            if let Some(voice) = self.voice.borrow().as_ref() {
+                voice.start();
+            }
+        }
+    }
+    fn stop_recording(&self) {
+        if self.dictating.replace(false) {
+            if let Some(voice) = self.voice.borrow().as_ref() {
+                voice.stop();
+            }
+        }
+    }
     fn log(&self, message: &str) {
         let _ = writeln!(self.log.borrow_mut(), "{message}");
     }
@@ -174,14 +260,13 @@ impl App {
         library.index(&background, &accent)
     }
     fn refresh_palette_names(&self) {
-        let mut names: Vec<slint::SharedString> = self
+        let names: Vec<slint::SharedString> = self
             .palettes
             .borrow()
             .schemes
             .iter()
             .map(|scheme| scheme.name.clone().into())
             .collect();
-        names.push("Власна".into());
         self.preferences
             .set_palette_names(ModelRc::new(VecModel::from(names)));
     }
@@ -198,6 +283,114 @@ impl App {
         if let Err(error) = self.preferences.show() {
             self.log(&format!("Settings: {error}"));
         }
+    }
+    fn apply_hotkey(self: &Rc<Self>, input: &str) {
+        let replacement = match hotkeys::parse(input) {
+            Ok(hotkey) => hotkey,
+            Err(error) => {
+                self.preferences.set_hotkey_message(error.into());
+                self.preferences
+                    .set_hotkey_text(hotkeys::friendly(self.current_hotkey.get()).into());
+                return;
+            }
+        };
+        let previous = self.current_hotkey.get();
+        self.stop_recording();
+        self.pending_open.set(None);
+        if let Some(animation) = self.animation.borrow_mut().as_mut() {
+            animation.preview = false;
+            animation
+                .playback
+                .set_closing(animation.start.elapsed().as_secs_f32(), true);
+        }
+        let path = self.config.with_file_name("hotkeys.ini");
+        if replacement == previous {
+            let mut registered_now = false;
+            if !self.hotkey_registered.get() {
+                let manager = self.hotkey_manager.borrow();
+                let Some(manager) = manager.as_ref() else {
+                    self.preferences.set_hotkey_message(
+                        "Менеджер гарячих клавіш недоступний. Перезапусти програму.".into(),
+                    );
+                    self.preferences
+                        .set_hotkey_text(hotkeys::friendly(previous).into());
+                    return;
+                };
+                if let Err(error) = manager.register(previous) {
+                    self.preferences
+                        .set_hotkey_message(format!("Комбінацію не зареєстровано: {error}").into());
+                    self.preferences
+                        .set_hotkey_text(hotkeys::friendly(previous).into());
+                    return;
+                }
+                registered_now = true;
+            }
+            if let Err(error) = hotkeys::save(&path, replacement) {
+                if registered_now {
+                    if let Some(manager) = self.hotkey_manager.borrow().as_ref() {
+                        let _ = manager.unregister(previous);
+                    }
+                }
+                self.preferences.set_hotkey_message(error.into());
+                self.preferences
+                    .set_hotkey_text(hotkeys::friendly(previous).into());
+                return;
+            }
+            if registered_now {
+                self.hotkey_registered.set(true);
+            }
+            self.preferences
+                .set_hotkey_text(hotkeys::friendly(replacement).into());
+            self.preferences
+                .set_hotkey_message("Гарячу клавішу збережено".into());
+            return;
+        }
+        let manager = self.hotkey_manager.borrow();
+        let Some(manager) = manager.as_ref() else {
+            self.preferences.set_hotkey_message(
+                "Менеджер гарячих клавіш недоступний. Перезапусти програму.".into(),
+            );
+            self.preferences
+                .set_hotkey_text(hotkeys::friendly(previous).into());
+            return;
+        };
+        if let Err(error) = manager.register(replacement) {
+            self.preferences.set_hotkey_message(
+                format!("Комбінацію не зареєстровано: {error}. Попередня лишилася активною.")
+                    .into(),
+            );
+            self.preferences
+                .set_hotkey_text(hotkeys::friendly(previous).into());
+            return;
+        }
+        if let Err(error) = hotkeys::save(&path, replacement) {
+            let _ = manager.unregister(replacement);
+            self.preferences.set_hotkey_message(
+                format!("Не вдалося зберегти комбінацію: {error}. Попередня лишилася активною.")
+                    .into(),
+            );
+            self.preferences
+                .set_hotkey_text(hotkeys::friendly(previous).into());
+            return;
+        }
+        self.current_hotkey.set(replacement);
+        if self.hotkey_registered.get() {
+            if let Err(error) = manager.unregister(previous) {
+                self.log(&format!("Could not unregister previous hotkey: {error}"));
+            }
+        }
+        self.hotkey_registered.set(true);
+        self.preferences
+            .set_hotkey_text(hotkeys::friendly(replacement).into());
+        if let Some(tray) = self.tray.upgrade() {
+            tray.set_hotkey_tooltip(format!("Reword · {}", hotkeys::friendly(replacement)).into());
+        }
+        self.preferences
+            .set_hotkey_message("Гарячу клавішу збережено".into());
+        self.log(&format!(
+            "Hotkey changed: {}",
+            hotkeys::canonical(replacement)
+        ));
     }
     fn set_speeds(&self, speeds: speeds::Speeds) {
         self.speeds.set(speeds);
@@ -386,6 +579,7 @@ impl App {
         );
     }
     fn release(&self) {
+        self.stop_recording();
         if self.pending_open.get() == Some(false) {
             self.pending_open.set(None);
         }
@@ -410,9 +604,10 @@ impl App {
         #[cfg(windows)]
         if !animation.preview
             && time > 0.05
-            && !platform::hotkey_held()
+            && !platform::hotkey_held(self.current_hotkey.get())
             && !animation.playback.is_closing()
         {
+            self.stop_recording();
             animation.playback.set_closing(time, true);
             self.log("hotkey: released");
         }
@@ -456,7 +651,20 @@ impl App {
             }
             return;
         }
-        self.apply_frame(motion::frame_with_stream(source_time, exit, time));
+        let mut frame = motion::frame_with_stream(source_time, exit, time);
+        if !animation.preview {
+            let volume = self
+                .voice
+                .borrow()
+                .as_ref()
+                .map_or(0.0, speech::Voice::level);
+            let volume = self.voice_level.get() + (volume - self.voice_level.get()) * 0.18;
+            self.voice_level.set(volume);
+            for bar in &mut frame.bars {
+                bar.height *= 0.2 + volume * 0.8;
+            }
+        }
+        self.apply_frame(frame);
     }
     fn capture(window: &slint::Window, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = window.take_snapshot()?;
@@ -552,6 +760,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = Rc::new(App {
         overlay,
         preferences,
+        tray: tray.as_weak(),
+        hotkey_manager: RefCell::new(None),
+        current_hotkey: std::cell::Cell::new(hotkeys::parse(hotkeys::DEFAULT).unwrap()),
+        hotkey_registered: std::cell::Cell::new(false),
+        voice: RefCell::new(None),
+        voice_generation: std::cell::Cell::new(0),
+        dictating: std::cell::Cell::new(false),
+        voice_level: std::cell::Cell::new(0.0),
         palette: RefCell::new(palette),
         palettes: RefCell::new(palettes),
         speeds: std::cell::Cell::new(speeds),
@@ -620,33 +836,69 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.set_speeds(speeds);
     platform::setup_overlay(app.overlay.window());
 
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyH);
-    let hotkey_manager = GlobalHotKeyManager::new().and_then(|manager| {
-        manager.register(hotkey)?;
-        Ok(manager)
-    });
-    match &hotkey_manager {
-        Ok(_) => app.log("Ctrl+Alt+H: registered"),
+    let hotkey_path = app.config.with_file_name("hotkeys.ini");
+    let hotkey = match hotkeys::load(&hotkey_path) {
+        Ok(hotkey) => hotkey,
         Err(error) => {
-            app.log(&format!("Hotkey unavailable: {error}"));
+            app.log(&format!("Hotkey configuration: {error}; using default"));
+            let default = hotkeys::parse(hotkeys::DEFAULT).unwrap();
+            if !hotkey_path.exists() {
+                if let Err(save_error) = hotkeys::save(&hotkey_path, default) {
+                    app.log(&format!("Hotkey default save failed: {save_error}"));
+                }
+            }
+            default
+        }
+    };
+    app.current_hotkey.set(hotkey);
+    app.preferences
+        .set_hotkey_text(hotkeys::friendly(hotkey).into());
+    app.preferences.set_hotkey_message("".into());
+    tray.set_hotkey_tooltip(format!("Reword · {}", hotkeys::friendly(hotkey)).into());
+    match GlobalHotKeyManager::new() {
+        Ok(manager) => {
+            match manager.register(hotkey) {
+                Ok(()) => {
+                    app.hotkey_registered.set(true);
+                    app.log(&format!("{}: registered", hotkeys::friendly(hotkey)));
+                }
+                Err(error) => {
+                    app.log(&format!("Hotkey unavailable: {error}"));
+                    app.preferences.set_hotkey_message(
+                        format!(
+                            "Не вдалося зареєструвати {}: {error}",
+                            hotkeys::friendly(hotkey)
+                        )
+                        .into(),
+                    );
+                    app.show_preferences();
+                }
+            }
+            app.hotkey_manager.replace(Some(manager));
+        }
+        Err(error) => {
+            app.log(&format!("Hotkey manager unavailable: {error}"));
             app.preferences
-                .set_message(format!("Не вдалося зареєструвати Ctrl+Alt+H: {error}").into());
+                .set_hotkey_message(format!("Менеджер гарячих клавіш недоступний: {error}").into());
             app.show_preferences();
         }
     }
     GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
-        if event.id == hotkey.id() {
-            let _ = slint::invoke_from_event_loop(move || {
-                CONTROLLER.with(|controller| {
-                    if let Some(app) = controller.borrow().upgrade() {
+        let _ = slint::invoke_from_event_loop(move || {
+            CONTROLLER.with(|controller| {
+                if let Some(app) = controller.borrow().upgrade() {
+                    if event.id == app.current_hotkey.get().id() {
                         match event.state {
-                            HotKeyState::Pressed => app.open(false),
+                            HotKeyState::Pressed => {
+                                app.start_recording();
+                                app.open(false);
+                            }
                             HotKeyState::Released => app.release(),
                         }
                     }
-                });
+                }
             });
-        }
+        });
     }));
     let weak = Rc::downgrade(&app);
     tray.on_preview(move || {
@@ -662,6 +914,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     tray.on_quit(|| {
         let _ = slint::quit_event_loop();
+    });
+    let weak = Rc::downgrade(&app);
+    app.preferences
+        .on_apply_voice(move |mode, device, url, token, threads| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let mut settings = speech::Settings::load(&app.config.with_file_name("speech.ini"));
+            settings.mode = if mode == 1 { "server" } else { "local" }.into();
+            settings.device = match device {
+                1 => "cuda",
+                2 => "auto",
+                _ => "cpu",
+            }
+            .into();
+            settings.url = url.trim().trim_end_matches('/').into();
+            settings.token = token.trim().into();
+            settings.threads = threads.clamp(1, 32) as usize;
+            match settings.save(&app.config.with_file_name("speech.ini")) {
+                Ok(()) => app.start_voice(),
+                Err(error) => app.preferences.set_voice_status(error.into()),
+            }
+        });
+    let weak = Rc::downgrade(&app);
+    app.preferences.on_apply_hotkey(move |input| {
+        if let Some(app) = weak.upgrade() {
+            app.apply_hotkey(&input);
+        }
     });
     let about_weak = about.as_weak();
     tray.on_about(move || {
@@ -694,8 +974,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     accent: parse_color(&app.preferences.get_accent_hex())?,
                 }))
             })
-            .unwrap_or(app.palettes.borrow().schemes.len() as i32);
+            .unwrap_or(-1);
         app.preferences.set_palette_index(index);
+    });
+    let weak = Rc::downgrade(&app);
+    app.preferences.on_picker_init(move |text| {
+        if let (Some(app), Ok(color)) = (weak.upgrade(), parse_color(&text)) {
+            let (h, s, v) = color_picker::to_hsv(color.red(), color.green(), color.blue());
+            app.preferences.set_picker_hue(h);
+            app.preferences.set_picker_saturation(s);
+            app.preferences.set_picker_value(v);
+            app.preferences
+                .set_picker_hue_color(color_picker::color(h, 1.0, 1.0));
+        }
+    });
+    let weak = Rc::downgrade(&app);
+    app.preferences.on_picker_update(move |h, s, v| {
+        if let Some(app) = weak.upgrade() {
+            app.preferences
+                .set_picker_hue_color(color_picker::color(h, 1.0, 1.0));
+            let text = hex(color_picker::color(h, s, v));
+            if app.preferences.get_picker_target() == 0 {
+                app.preferences.set_background_hex(text.into());
+            } else {
+                app.preferences.set_accent_hex(text.into());
+            }
+        }
     });
     let weak = Rc::downgrade(&app);
     app.preferences.on_apply(move |background, accent| {
@@ -871,6 +1175,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             *i += 1;
         });
     } else {
+        if !args.iter().any(|a| a == "--smoke-test") {
+            app.start_voice();
+        }
+        if args.iter().any(|a| a == "--voice-settings") {
+            app.show_preferences();
+        }
         if args.iter().any(|a| a == "--settings") {
             app.show_preferences();
         }
@@ -909,7 +1219,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(error) = GRAPHICS_FAILURE.with(|failure| failure.take()) {
         return Err(error.into());
     }
-    drop(hotkey_manager);
+    app.hotkey_manager.borrow_mut().take();
     drop(lock);
     Ok(())
 }
@@ -947,6 +1257,45 @@ fn worker_main() {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--speech-server") {
+        if let Err(error) = speech::server::run() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(path) = std::env::args().find_map(|arg| {
+        arg.strip_prefix("--transcribe-file=")
+            .or_else(|| arg.strip_prefix("--transcribe-stream-file="))
+            .map(PathBuf::from)
+    }) {
+        let base = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let result = if std::env::args().any(|arg| arg.starts_with("--transcribe-stream-file=")) {
+            speech::transcribe_stream_file(&path, &base)
+        } else {
+            speech::transcribe_file(&path, &base)
+        };
+        match result {
+            Ok(result) => {
+                if let Some(path) = std::env::args()
+                    .find_map(|arg| arg.strip_prefix("--output=").map(PathBuf::from))
+                {
+                    fs::write(path, result.to_string()).unwrap();
+                } else {
+                    println!("{result}");
+                }
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(renderer) = launcher::worker_renderer() {
         if renderer == launcher::Renderer::Vulkan
             && std::env::args().any(|arg| arg == "--simulate-vulkan-crash")
