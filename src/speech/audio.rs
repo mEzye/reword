@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 pub const RATE: usize = 16_000;
-pub const MAX_SECONDS: usize = 120;
+pub const MAX_SECONDS: usize = 600;
 const MAX_SAMPLES: usize = RATE * MAX_SECONDS;
 
 pub struct Capture {
@@ -81,7 +81,7 @@ impl Capture {
         }
         let input = std::mem::take(&mut *self.samples.lock().unwrap());
         if input.len() >= self.rate * MAX_SECONDS {
-            return Err("Запис задовгий: максимум 2 хвилини".into());
+            return Err("Запис задовгий: максимум 10 хвилин".into());
         }
         resample(&input, self.rate)
     }
@@ -104,7 +104,7 @@ fn snapshot_samples(
     let input = {
         let samples = samples.lock().unwrap();
         if samples.len() >= rate * MAX_SECONDS {
-            return Err("Запис задовгий: максимум 2 хвилини".into());
+            return Err("Запис задовгий: максимум 10 хвилин".into());
         }
         samples.clone()
     };

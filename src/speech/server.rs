@@ -142,7 +142,7 @@ pub fn run() -> Result<(), String> {
             respond(
                 request,
                 413,
-                serde_json::json!({"error":"Audio too large (maximum 120 seconds)"}),
+                serde_json::json!({"error":"Audio too large (maximum 600 seconds)"}),
             );
             continue;
         }
