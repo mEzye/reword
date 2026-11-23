@@ -72,8 +72,7 @@ pub fn run() -> Result<(), String> {
             token
         }
     };
-    let started = Instant::now();
-    eprintln!("Loading Parakeet UK v3 ({device})...");
+    crate::runtime::log(true, &format!("Loading Parakeet UK v3 ({device})"));
     let mut engine = if device == "auto" && !std::env::args().any(|arg| arg == "--engine-child") {
         let settings = super::Settings {
             device: "auto".into(),
@@ -90,11 +89,7 @@ pub fn run() -> Result<(), String> {
     } else {
         Runner::Native(Engine::load(&base, &device, threads)?)
     };
-    eprintln!(
-        "Model ready on {} in {:.2}s",
-        engine.backend(),
-        started.elapsed().as_secs_f64()
-    );
+    crate::runtime::log(true, &format!("Model ready: {}", engine.backend()));
     let server = tiny_http::Server::http(&listen).map_err(|e| e.to_string())?;
     let address = server.server_addr().to_ip().ok_or("No TCP listener")?;
     let url = format!("http://{address}");
@@ -105,7 +100,7 @@ pub fn run() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    eprintln!("Speech server: {url}; token file: {}", token_path.display());
+    crate::runtime::log(true, &format!("Speech server listening: {url}"));
     // One resident model, serialized inference. Concurrent clients queue here;
     // the native library does not permit concurrent compute on one model.
     for mut request in server.incoming_requests() {
@@ -173,7 +168,10 @@ pub fn run() -> Result<(), String> {
                 200,
                 serde_json::json!({"text":text,"elapsed_seconds":start.elapsed().as_secs_f64(),"backend":engine.backend()}),
             ),
-            Err(error) => respond(request, 500, serde_json::json!({"error":error})),
+            Err(error) => {
+                crate::runtime::log(true, &format!("Transcription failed: {error}"));
+                respond(request, 500, serde_json::json!({"error":error}));
+            }
         }
     }
     Ok(())

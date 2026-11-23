@@ -355,8 +355,8 @@ impl Drop for Voice {
 struct Client {
     backend: String,
     settings: Settings,
-    directory: PathBuf,
     child: Option<Child>,
+    stderr: Option<thread::JoinHandle<()>>,
     ready: Option<PathBuf>,
     local_token: Option<PathBuf>,
     url: String,
@@ -366,7 +366,7 @@ struct Client {
 }
 
 impl Client {
-    fn new(settings: Settings, directory: PathBuf, cancelled: Arc<AtomicBool>) -> Self {
+    fn new(settings: Settings, _directory: PathBuf, cancelled: Arc<AtomicBool>) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))
             .timeout_connect(Some(Duration::from_secs(5)))
@@ -377,8 +377,8 @@ impl Client {
             url: settings.url.clone(),
             token: settings.token.clone(),
             settings,
-            directory,
             child: None,
+            stderr: None,
             ready: None,
             local_token: None,
             agent,
@@ -410,11 +410,14 @@ impl Client {
                 self.stop_child();
                 let key = server::random_token()?;
                 let suffix = &key[..16];
-                let ready = self.directory.join(format!(".speech-ready-{suffix}.json"));
-                let token_path = self.directory.join(format!(".speech-{suffix}.token"));
+                let runtime = std::env::var_os("REWORD_RUNTIME_SESSION")
+                    .map(PathBuf::from)
+                    .ok_or("No runtime session")?;
+                let ready = runtime.join(format!(".speech-ready-{suffix}.json"));
+                let token_path = runtime.join(format!(".speech-{suffix}.token"));
                 fs::write(&token_path, &key).map_err(|e| e.to_string())?;
-                let log = fs::File::create(self.directory.join("speech-server.log"))
-                    .map_err(|e| e.to_string())?;
+                self.ready = Some(ready.clone());
+                self.local_token = Some(token_path.clone());
                 let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
                 command
                     .arg("--speech-server")
@@ -427,15 +430,18 @@ impl Client {
                     .arg(format!("--token-file={}", token_path.display()))
                     .stdin(Stdio::piped())
                     .stdout(Stdio::null())
-                    .stderr(Stdio::from(log));
+                    .stderr(Stdio::piped());
                 #[cfg(windows)]
                 {
                     use std::os::windows::process::CommandExt;
                     command.creation_flags(0x08000000);
                 }
-                self.child = Some(command.spawn().map_err(|e| e.to_string())?);
-                self.ready = Some(ready.clone());
-                self.local_token = Some(token_path);
+                let mut child = command.spawn().map_err(|e| e.to_string())?;
+                self.stderr = child
+                    .stderr
+                    .take()
+                    .map(|pipe| crate::runtime::drain(pipe, true));
+                self.child = Some(child);
                 self.token = key;
                 let started = Instant::now();
                 loop {
@@ -459,16 +465,10 @@ impl Client {
                         .map_err(|e| e.to_string())?
                         .is_some()
                     {
-                        let log = fs::read_to_string(self.directory.join("speech-server.log"))
-                            .unwrap_or_default();
-                        let tail: String = log
-                            .chars()
-                            .rev()
-                            .take(700)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect();
+                        if let Some(stderr) = self.stderr.take() {
+                            let _ = stderr.join();
+                        }
+                        let tail = crate::runtime::tail(true);
                         return Err(format!("Рушій голосу не запустився: {tail}"));
                     }
                     if started.elapsed() > Duration::from_secs(180) {
@@ -511,7 +511,7 @@ impl Client {
         }
     }
     fn fallback_cpu(&mut self) {
-        eprintln!("Speech GPU failed; restarting the engine on CPU and retrying the same audio");
+        crate::runtime::log(true, "Speech GPU failed; retrying on CPU");
         self.stop_child();
         self.settings.device = "cpu".into();
     }
@@ -519,6 +519,9 @@ impl Client {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        if let Some(stderr) = self.stderr.take() {
+            let _ = stderr.join();
         }
         for path in [self.ready.take(), self.local_token.take()]
             .into_iter()

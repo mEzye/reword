@@ -1,7 +1,6 @@
 use fs2::FileExt;
 use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs::{self, OpenOptions},
     path::PathBuf,
     process::{Command, Stdio},
     thread,
@@ -69,22 +68,18 @@ pub fn supervise() -> Result<i32, Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let directory = directory()?;
     fs::create_dir_all(&directory)?;
+    let scope = crate::runtime::scope(&directory)?;
     let guard = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(directory.join(".reword-launcher.lock"))?;
+        .open(scope.join("launcher.lock"))?;
     guard
         .try_lock_exclusive()
         .map_err(|_| "Reword is already running. Open its tray menu.")?;
-    let mut log = File::create(directory.join("launcher.log"))?;
-    writeln!(
-        log,
-        "Reword {} | Vulkan <=1.1 -> OpenGL | GPU renderers only",
-        env!("CARGO_PKG_VERSION")
-    )?;
-    let ready = directory.join(format!(".renderer-ready-{}.txt", std::process::id()));
+    let session = std::env::var_os("REWORD_RUNTIME_SESSION").ok_or("No runtime session")?;
+    let ready = PathBuf::from(session).join(format!(".renderer-ready-{}.txt", std::process::id()));
     let order: &[Renderer] = if args.iter().any(|a| a == "--opengl") {
         &[Renderer::OpenGl]
     } else {
@@ -101,19 +96,15 @@ pub fn supervise() -> Result<i32, Box<dyn std::error::Error>> {
             .arg(format!("--renderer-ready-file={}", ready.display()))
             .env_remove("WGPU_ADAPTER_NAME")
             .stdout(Stdio::null())
-            .stderr(File::create(
-                directory.join(format!("renderer-{}.stderr.log", renderer.name())),
-            )?);
+            .stderr(Stdio::piped());
         if renderer == Renderer::Vulkan {
             command.env("WGPU_BACKEND", "vulkan");
         }
         let mut child = command.spawn()?;
-        writeln!(
-            log,
-            "Starting {}; worker pid={}",
-            renderer.name(),
-            child.id()
-        )?;
+        let stderr = child
+            .stderr
+            .take()
+            .map(|pipe| crate::runtime::drain(pipe, false));
         let started = Instant::now();
         let mut timed_out = false;
         let status = loop {
@@ -121,12 +112,6 @@ pub fn supervise() -> Result<i32, Box<dyn std::error::Error>> {
                 break status;
             }
             if ready.exists() {
-                writeln!(
-                    log,
-                    "{} ready after {:.2}s; supervisor sleeping until exit",
-                    renderer.name(),
-                    started.elapsed().as_secs_f64()
-                )?;
                 break child.wait()?;
             }
             if started.elapsed() > Duration::from_secs(25) {
@@ -136,33 +121,30 @@ pub fn supervise() -> Result<i32, Box<dyn std::error::Error>> {
             }
             thread::sleep(Duration::from_millis(50));
         };
-        writeln!(
-            log,
-            "{} exited: {:?}; startup_timeout={timed_out}",
-            renderer.name(),
-            status.code()
-        )?;
+        if let Some(stderr) = stderr {
+            let _ = stderr.join();
+        }
         if ready.exists() {
             let _ = fs::remove_file(&ready);
         }
         if status.success() && !timed_out {
             return Ok(0);
         }
-        for (source, extension) in [("reword.log", "log"), ("error.log", "error.log")] {
-            let source = directory.join(source);
-            if source.exists() {
-                let _ = fs::copy(
-                    source,
-                    directory.join(format!("renderer-{}.{}", renderer.name(), extension)),
-                );
-            }
-        }
+        crate::runtime::log(
+            false,
+            &format!(
+                "{} exited: {:?}; startup timeout: {timed_out}",
+                renderer.name(),
+                status.code()
+            ),
+        );
         if renderer == Renderer::Vulkan {
-            writeln!(
-                log,
-                "Vulkan could not run this overlay; retrying OpenGL in a fresh process"
-            )?;
+            crate::runtime::log(false, "Vulkan failed; retrying OpenGL");
         }
     }
-    Err("Не вдалося запустити ні Vulkan, ні OpenGL. Причини збережені в launcher.log, renderer-vulkan.log та renderer-opengl.log.".into())
+    Err(format!(
+        "Не вдалося запустити ні Vulkan, ні OpenGL. Журнал: {}",
+        crate::runtime::log_path(false).display()
+    )
+    .into())
 }

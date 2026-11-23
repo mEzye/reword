@@ -6,6 +6,7 @@ mod launcher;
 mod motion;
 mod palettes;
 mod platform;
+mod runtime;
 mod speech;
 mod speeds;
 
@@ -15,7 +16,7 @@ use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::{
     cell::RefCell,
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Write},
+    io::BufWriter,
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
@@ -111,10 +112,6 @@ struct Animation {
     start: Instant,
     playback: motion::Playback,
     preview: bool,
-    first_frame: u32,
-    first_visible_logged: bool,
-    last_render: Option<Instant>,
-    worst_frame_gap: Duration,
 }
 
 thread_local! {
@@ -141,13 +138,10 @@ struct App {
     bars: Rc<VecModel<WaveBar>>,
     animator: Timer,
     config: PathBuf,
-    log: RefCell<File>,
-    rendered: Rc<std::cell::Cell<u32>>,
     prepared: std::cell::Cell<bool>,
     warming: std::cell::Cell<bool>,
     ready_timer: Timer,
     pending_open: std::cell::Cell<Option<bool>>,
-    diagnostics: bool,
 }
 
 impl App {
@@ -195,7 +189,13 @@ impl App {
                 self.preferences.set_transcript(text.into());
             }
             speech::Event::Error(error) => {
-                self.log(&format!("Speech error: {error}"));
+                let token = self.preferences.get_server_token();
+                let safe_error = if token.is_empty() {
+                    error.clone()
+                } else {
+                    error.replace(token.as_str(), "[redacted]")
+                };
+                runtime::log(true, &format!("Speech error: {safe_error}"));
                 self.preferences.set_voice_status(error.into());
             }
             speech::Event::Transcript {
@@ -204,7 +204,6 @@ impl App {
                 elapsed,
             } => {
                 self.preferences.set_transcript(text.into());
-                self.log(&format!("Speech complete: {elapsed:.2}s"));
                 self.preferences.set_voice_status(
                     match inserted {
                         Ok(()) => format!("Вставлено · {elapsed:.1} с"),
@@ -230,7 +229,7 @@ impl App {
         }
     }
     fn log(&self, message: &str) {
-        let _ = writeln!(self.log.borrow_mut(), "{message}");
+        runtime::log(false, message);
     }
     fn set_palette(&self, palette: Palette) {
         self.palette.replace(palette);
@@ -387,10 +386,6 @@ impl App {
         }
         self.preferences
             .set_hotkey_message("Гарячу клавішу збережено".into());
-        self.log(&format!(
-            "Hotkey changed: {}",
-            hotkeys::canonical(replacement)
-        ));
     }
     fn set_speeds(&self, speeds: speeds::Speeds) {
         self.speeds.set(speeds);
@@ -466,14 +461,10 @@ impl App {
         }
         if !preview {
             if let Some(animation) = self.animation.borrow_mut().as_mut() {
-                let was_closing = animation.playback.is_closing();
                 animation.preview = false;
                 animation
                     .playback
                     .set_closing(animation.start.elapsed().as_secs_f32(), false);
-                if was_closing {
-                    self.log("hotkey: pressed; animation reversed toward open");
-                }
                 return;
             }
         }
@@ -486,20 +477,7 @@ impl App {
             start: Instant::now(),
             playback,
             preview,
-            first_frame: self.rendered.get(),
-            first_visible_logged: false,
-            last_render: None,
-            worst_frame_gap: Duration::ZERO,
         }));
-        self.log(&format!(
-            "resident resume: {}",
-            platform::resident_description(self.overlay.window())
-        ));
-        self.log(if preview {
-            "animation: preview"
-        } else {
-            "hotkey: pressed"
-        });
         let weak = Rc::downgrade(self);
         self.animator
             .start(TimerMode::Repeated, Duration::from_millis(8), move || {
@@ -515,7 +493,6 @@ impl App {
         if self.prepared.get() || self.warming.replace(true) {
             return;
         }
-        let start = Instant::now();
         if let Err(error) = self.overlay.show() {
             self.warming.set(false);
             self.log(&format!("GPU warmup: {error}"));
@@ -546,10 +523,6 @@ impl App {
         self.update_frame(1.5, 1.0);
         self.overlay.set_visibility(0.0001);
         self.overlay.window().request_redraw();
-        self.log(&format!(
-            "GPU warmup: {:.2}s",
-            start.elapsed().as_secs_f32()
-        ));
         let weak = Rc::downgrade(self);
         self.ready_timer.start(
             TimerMode::SingleShot,
@@ -561,10 +534,6 @@ impl App {
                 app.warming.set(false);
                 app.prepared.set(true);
                 app.overlay.set_visibility(0.0);
-                app.log(&format!(
-                    "resident ready: {}; GPU retained; click-through; event-driven idle",
-                    platform::resident_description(app.overlay.window())
-                ));
                 if let Err(error) = launcher::mark_ready() {
                     GRAPHICS_FAILURE.with(|failure| {
                         failure.replace(Some(error.to_string()));
@@ -588,7 +557,6 @@ impl App {
                 animation
                     .playback
                     .set_closing(animation.start.elapsed().as_secs_f32(), true);
-                self.log("hotkey: released");
             }
         }
     }
@@ -609,46 +577,13 @@ impl App {
         {
             self.stop_recording();
             animation.playback.set_closing(time, true);
-            self.log("hotkey: released");
         }
         let (source_time, exit) = animation.playback.sample(time);
         if exit <= 0.0 {
-            self.log(&format!(
-                "animation: {} frames in {:.2}s; worst frame gap {:.1}ms",
-                self.rendered.get().saturating_sub(animation.first_frame),
-                time,
-                animation.worst_frame_gap.as_secs_f64() * 1000.0,
-            ));
             // Keep the native window and device. Clear once, then stop drawing.
             self.overlay.set_visibility(0.0);
             self.animator.stop();
             *animations = None;
-            self.log(&format!(
-                "resident parked: {}; frame timer stopped",
-                platform::resident_description(self.overlay.window())
-            ));
-            if self.diagnostics {
-                let weak = Rc::downgrade(self);
-                Timer::single_shot(Duration::from_millis(200), move || {
-                    let Some(app) = weak.upgrade() else {
-                        return;
-                    };
-                    let baseline = app.rendered.get();
-                    let weak = Rc::downgrade(&app);
-                    Timer::single_shot(Duration::from_secs(1), move || {
-                        let Some(app) = weak.upgrade() else {
-                            return;
-                        };
-                        if app.animation.borrow().is_none() {
-                            app.log(&format!(
-                                "idle verification: {} new frames in 1s; {}",
-                                app.rendered.get().saturating_sub(baseline),
-                                platform::resident_description(app.overlay.window())
-                            ));
-                        }
-                    });
-                });
-            }
             return;
         }
         let mut frame = motion::frame_with_stream(source_time, exit, time);
@@ -695,29 +630,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .truncate(false)
         .read(true)
         .write(true)
-        .open(directory.join(".reword.lock"))?;
+        .open(runtime::scope(&directory)?.join("worker.lock"))?;
     if lock.try_lock_exclusive().is_err() {
         return Err("Reword is already running. Open its tray menu.".into());
     }
-    let mut log = File::create(directory.join("reword.log"))?;
     let renderer = launcher::worker_renderer().unwrap_or(launcher::Renderer::Vulkan);
-    writeln!(
-        log,
-        "Reword {} | Rust + Slint 1.19 | renderer={}",
-        env!("CARGO_PKG_VERSION"),
-        renderer.name()
-    )?;
-    if renderer == launcher::Renderer::Vulkan {
-        writeln!(
-            log,
-            "Vulkan API cap: 1.1; legacy Intel descriptor-pool fix enabled"
-        )?;
-    }
-    writeln!(
-        log,
-        "GPU power preference: {}",
-        std::env::var("WGPU_POWER_PREF").unwrap_or_default()
-    )?;
+    runtime::log(
+        false,
+        &format!(
+            "Reword {} started; renderer={}",
+            env!("CARGO_PKG_VERSION"),
+            renderer.name()
+        ),
+    );
 
     let selector = slint::BackendSelector::new()
         .backend_name("winit".into())
@@ -754,9 +679,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let speeds = speeds::Speeds::load(&directory.join("animation.ini"));
     if let Err(error) = speeds.save(&directory.join("animation.ini")) {
-        writeln!(log, "Animation settings migration/save: {error}")?;
+        runtime::log(
+            false,
+            &format!("Animation settings migration/save: {error}"),
+        );
     }
-    let rendered = Rc::new(std::cell::Cell::new(0_u32));
     let app = Rc::new(App {
         overlay,
         preferences,
@@ -776,55 +703,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         bars,
         animator: Timer::default(),
         config,
-        log: RefCell::new(log),
-        rendered,
         prepared: std::cell::Cell::new(false),
         warming: std::cell::Cell::new(false),
         ready_timer: Timer::default(),
         pending_open: std::cell::Cell::new(None),
-        diagnostics: args.iter().any(|arg| arg == "--smoke-test"),
     });
     CONTROLLER.with(|controller| {
         controller.replace(Rc::downgrade(&app));
     });
-    let weak = Rc::downgrade(&app);
-    let _ = app
-        .overlay
-        .window()
-        .set_rendering_notifier(move |state, api| {
-            if matches!(state, slint::RenderingState::RenderingSetup) {
-                if let Some(app) = weak.upgrade() {
-                    app.log(&format!(
-                        "GPU setup: resident device initialized; {}",
-                        platform::graphics_description(api)
-                    ));
-                }
-                return;
-            }
-            if !matches!(state, slint::RenderingState::AfterRendering) {
-                return;
-            }
-            let Some(app) = weak.upgrade() else {
-                return;
-            };
-            app.rendered.set(app.rendered.get().saturating_add(1));
-            if let Some(animation) = app.animation.borrow_mut().as_mut() {
-                if app.overlay.get_visibility() > 0.01 {
-                    let now = Instant::now();
-                    if !animation.first_visible_logged {
-                        animation.first_visible_logged = true;
-                        app.log(&format!(
-                            "first visible render: {:.1}ms",
-                            animation.start.elapsed().as_secs_f64() * 1000.0
-                        ));
-                    }
-                    if let Some(last) = animation.last_render.replace(now) {
-                        animation.worst_frame_gap =
-                            animation.worst_frame_gap.max(now.duration_since(last));
-                    }
-                }
-            }
-        });
     app.refresh_palette_names();
     if let Some(index) = selected_scheme {
         app.preferences.set_palette_index(index as i32);
@@ -860,7 +746,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             match manager.register(hotkey) {
                 Ok(()) => {
                     app.hotkey_registered.set(true);
-                    app.log(&format!("{}: registered", hotkeys::friendly(hotkey)));
                 }
                 Err(error) => {
                     app.log(&format!("Hotkey unavailable: {error}"));
@@ -1169,7 +1054,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 app.overlay.window(),
                 &directory.join("preview-rust").join(format!("{ms:04}.png")),
             ) {
-                Ok(()) => app.log(&format!("GPU snapshot: {ms}ms")),
+                Ok(()) => {}
                 Err(error) => app.log(&format!("GPU snapshot failed: {error}")),
             }
             *i += 1;
@@ -1244,22 +1129,26 @@ fn worker_main() {
             .and_then(|mut text| text.take())
             .unwrap_or_else(|| "Невідома помилка ініціалізації графіки".into()),
     };
-    {
-        let directory = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(Path::to_path_buf));
-        if let Some(directory) = directory {
-            let _ = fs::write(directory.join("error.log"), format!("{error}\n"));
-        }
-        eprintln!("Reword: {error}");
-        std::process::exit(1);
-    }
+    runtime::log(false, &format!("Renderer failed: {error}"));
+    std::process::exit(1);
 }
 
 fn main() {
+    let config = launcher::directory().unwrap_or_else(|_| std::env::temp_dir());
+    if let Err(error) = fs::create_dir_all(&config) {
+        eprintln!("Config directory: {error}");
+        std::process::exit(1);
+    }
+    let session = match runtime::Session::start(&config) {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("Runtime directory: {error}");
+            std::process::exit(1);
+        }
+    };
     if std::env::args().any(|arg| arg == "--speech-server") {
         if let Err(error) = speech::server::run() {
-            eprintln!("{error}");
+            runtime::log(true, &format!("Speech server: {error}"));
             std::process::exit(1);
         }
         return;
@@ -1306,9 +1195,14 @@ fn main() {
         return;
     }
     match launcher::supervise() {
-        Ok(code) => std::process::exit(code),
+        Ok(code) => {
+            drop(session);
+            std::process::exit(code);
+        }
         Err(error) => {
+            runtime::log(false, &format!("Launcher failed: {error}"));
             platform::show_startup_error(&error.to_string());
+            drop(session);
             std::process::exit(1);
         }
     }

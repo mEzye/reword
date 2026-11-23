@@ -36,6 +36,36 @@ type Free = unsafe extern "C" fn(*mut c_void);
 type Run = unsafe extern "C" fn(*mut c_void, *const f32, i32, *const c_void) -> i32;
 type Text = unsafe extern "C" fn(*const c_void) -> *const c_char;
 type Status = unsafe extern "C" fn(i32) -> *const c_char;
+type LogCallback = unsafe extern "C" fn(i32, *const c_char, *mut c_void);
+type SetLog = unsafe extern "C" fn(Option<LogCallback>, *mut c_void);
+
+fn should_log(level: i32) -> bool {
+    matches!(level, 2 | 3)
+}
+
+unsafe extern "C" fn native_log(level: i32, message: *const c_char, _: *mut c_void) {
+    if !should_log(level) || message.is_null() {
+        return;
+    }
+    let _ = std::panic::catch_unwind(|| {
+        let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+        crate::runtime::log(true, text.trim_end());
+    });
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::should_log;
+
+    #[test]
+    fn native_warnings_and_errors_are_kept_but_progress_is_not() {
+        assert!(should_log(2));
+        assert!(should_log(3));
+        for level in [0, 1, 4, 5] {
+            assert!(!should_log(level));
+        }
+    }
+}
 
 pub struct Engine {
     _library: libloading::Library,
@@ -93,6 +123,8 @@ impl Engine {
                         .map_err(|e| e.to_string())?
                 };
             }
+            let set_log = symbol!("transcribe_log_set", SetLog);
+            set_log(Some(native_log), ptr::null_mut());
             let version = symbol!(
                 "transcribe_version",
                 unsafe extern "C" fn() -> *const c_char
@@ -153,6 +185,7 @@ impl Engine {
             let mut model = ptr::null_mut();
             let mut code = load(path_c.as_ptr(), &params, &mut model);
             if code != 0 && device == "auto" {
+                crate::runtime::log(true, "GPU model load failed; retrying on CPU");
                 params.backend = 1;
                 code = load(path_c.as_ptr(), &params, &mut model);
             }
